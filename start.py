@@ -1742,7 +1742,9 @@ def handleProxyList(con, proxy_li, proxy_ty, url=None):
             "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/socks5/socks5.txt",
             "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS5_RAW.txt",
             "https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks5.txt",
-            "https://raw.githubusercontent.com/B4RC0DE-TM/proxy-list/main/SOCKS5.txt"
+            "https://raw.githubusercontent.com/B4RC0DE-TM/proxy-list/main/SOCKS5.txt",
+            "https://raw.githubusercontent.com/Jakee8718/Free-Proxies/main/socks5/socks5.txt",
+            "https://raw.githubusercontent.com/UrielChaves/File-Proxy/master/Socks5.txt"
         ]
         
         scavenged_proxies = []
