@@ -1725,18 +1725,30 @@ def handleProxyList(con, proxy_li, proxy_ty, url=None):
         logger.warning(f"{bcolors.FAIL}Primary Proxy File Failed or Empty! Activating Scavenger Mode...{bcolors.RESET}")
         logger.info(f"{bcolors.WARNING}Downloading Fresh Proxies from Public Sources...{bcolors.RESET}")
         
-        # Fresh Sources (TheSpeedX, Monosans, etc)
+        # Fresh Sources (ULTIMATE COLLECTION - 16 SOURCES)
         sources = [
             "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt",
             "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt",
             "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
-            "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks5.txt"
+            "https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/socks5.txt",
+            "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/socks5.txt",
+            "https://raw.githubusercontent.com/Zloi-User/hideip.me/main/socks5.txt",
+            "https://raw.githubusercontent.com/ManuGM/proxy-365/main/SOCKS5.txt",
+            "https://raw.githubusercontent.com/tuanminpay/live-proxy-list/master/socks5.txt",
+            "https://raw.githubusercontent.com/casals-ar/proxy-list/main/socks5",
+            "https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/socks5.txt",
+            "https://raw.githubusercontent.com/elliottophellia/yakumo/master/results/socks5/global/socks5_checked.txt",
+            "https://raw.githubusercontent.com/prxchk/proxy-list/main/socks5.txt",
+            "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/socks5/socks5.txt",
+            "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS5_RAW.txt",
+            "https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks5.txt",
+            "https://raw.githubusercontent.com/B4RC0DE-TM/proxy-list/main/SOCKS5.txt"
         ]
         
         scavenged_proxies = []
         for source in sources:
             try:
-                logger.debug(f"Fetching from: {source}")
+                # logger.debug(f"Fetching from: {source}") # Silent fetch to reduce spam
                 with get(source, timeout=10) as r:
                     if r.status_code == 200:
                         lines = r.text.splitlines()
