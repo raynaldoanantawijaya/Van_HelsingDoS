@@ -1696,20 +1696,30 @@ def handleProxyList(con, proxy_li, proxy_ty, url=None):
                 stringBuilder += (proxy.__str__() + "\n")
             wr.write(stringBuilder)
 
-    # [OPTIMIZED] Manual Proxy Reading for Webshare/Auth Support
+    # [OPTIMIZED] ULTRA-HARDCORE PROXY LOADER (Van Helsing Edition)
     proxies = []
     if proxy_li.exists():
         with proxy_li.open("r") as f:
-            content = f.read().strip()
-            # Split by newlines and handle potential list-like content
-            lines = [line.strip() for line in content.splitlines() if line.strip()]
-            
-            # Using ProxyUtiles.parseAll to handle raw strings properly
-            # Valid formats: IP:PORT, USER:PASS@IP:PORT, HOSTNAME:PORT
-            proxies = ProxyUtiles.parseAll(lines)
+            lines = [line.strip() for line in f.read().splitlines() if line.strip()]
+            for line in lines:
+                try:
+                    # Format: user:pass@host:port
+                    if "@" in line:
+                        auth, endpoint = line.split("@")
+                        user, password = auth.split(":")
+                        host, port = endpoint.split(":")
+                        # Force Create Proxy Object
+                        proxies.append(Proxy(host, int(port), ProxyType.SOCKS5, user, password))
+                    else:
+                        # Fallback for IP:PORT
+                        parts = line.split(":")
+                        proxies.append(Proxy(parts[0], int(parts[1]), ProxyType.SOCKS5))
+                except Exception as e:
+                    logger.error(f"Failed to parse proxy line: {line} | Error: {e}")
 
     if proxies:
         logger.info(f"{bcolors.WARNING}Proxy Count: {bcolors.OKBLUE}{len(proxies):,}{bcolors.RESET}")
+        logger.info(f"{bcolors.OKGREEN}Proxy Loaded Successfully via Hard-Bypass!{bcolors.RESET}")
     else:
         logger.info(
             f"{bcolors.WARNING}Empty Proxy File, running flood without proxy{bcolors.RESET}")
