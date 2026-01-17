@@ -1714,16 +1714,49 @@ def handleProxyList(con, proxy_li, proxy_ty, url=None):
                         # Fallback for IP:PORT
                         parts = line.split(":")
                         proxies.append(Proxy(parts[0], int(parts[1]), ProxyType.SOCKS5))
-                except Exception as e:
-                    logger.error(f"Failed to parse proxy line: {line} | Error: {e}")
+                except Exception:
+                    pass
 
     if proxies:
         logger.info(f"{bcolors.WARNING}Proxy Count: {bcolors.OKBLUE}{len(proxies):,}{bcolors.RESET}")
         logger.info(f"{bcolors.OKGREEN}Proxy Loaded Successfully via Hard-Bypass!{bcolors.RESET}")
     else:
-        logger.info(
-            f"{bcolors.WARNING}Empty Proxy File, running flood without proxy{bcolors.RESET}")
-        proxies = None
+        # [OPTIMIZED] AUTO-FAILOVER: SCAVENGER MODE
+        logger.warning(f"{bcolors.FAIL}Primary Proxy File Failed or Empty! Activating Scavenger Mode...{bcolors.RESET}")
+        logger.info(f"{bcolors.WARNING}Downloading Fresh Proxies from Public Sources...{bcolors.RESET}")
+        
+        # Fresh Sources (TheSpeedX, Monosans, etc)
+        sources = [
+            "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt",
+            "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt",
+            "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
+            "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks5.txt"
+        ]
+        
+        scavenged_proxies = []
+        for source in sources:
+            try:
+                logger.debug(f"Fetching from: {source}")
+                with get(source, timeout=10) as r:
+                    if r.status_code == 200:
+                        lines = r.text.splitlines()
+                        for line in lines:
+                            if ":" in line:
+                                try:
+                                    parts = line.strip().split(":")
+                                    scavenged_proxies.append(Proxy(parts[0], int(parts[1]), ProxyType.SOCKS5))
+                                except: pass
+            except Exception:
+                continue
+
+        # Remove duplicates
+        proxies = list(set(scavenged_proxies))
+        
+        if proxies:
+            logger.info(f"{bcolors.OKGREEN}Scavenged {len(proxies):,} Fresh Proxies!{bcolors.RESET}")
+        else:
+            logger.info(f"{bcolors.FAIL}Scavenger Failed. Running Direct Attack (DANGEROUS).{bcolors.RESET}")
+            proxies = None
 
     return proxies
 
