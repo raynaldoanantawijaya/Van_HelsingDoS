@@ -1696,7 +1696,18 @@ def handleProxyList(con, proxy_li, proxy_ty, url=None):
                 stringBuilder += (proxy.__str__() + "\n")
             wr.write(stringBuilder)
 
-    proxies = ProxyUtiles.readFromFile(proxy_li)
+    # [OPTIMIZED] Manual Proxy Reading for Webshare/Auth Support
+    proxies = []
+    if proxy_li.exists():
+        with proxy_li.open("r") as f:
+            content = f.read().strip()
+            # Split by newlines and handle potential list-like content
+            lines = [line.strip() for line in content.splitlines() if line.strip()]
+            
+            # Using ProxyUtiles.parseAll to handle raw strings properly
+            # Valid formats: IP:PORT, USER:PASS@IP:PORT, HOSTNAME:PORT
+            proxies = ProxyUtiles.parseAll(lines)
+
     if proxies:
         logger.info(f"{bcolors.WARNING}Proxy Count: {bcolors.OKBLUE}{len(proxies):,}{bcolors.RESET}")
     else:
