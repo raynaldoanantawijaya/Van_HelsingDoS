@@ -1,12 +1,12 @@
-<h1 align="center">MHDDoS - DDoS Attack Script With 57 Methods</h1>
+<h1 align="center">Van_HelsingDoS - DDoS Attack Script With 57 Methods</h1>
 <em><h5 align="center">(Programming Language - Python 3)</h5></em>
 
 <p align="center">
-<a href="#"><img alt="MH-DDoS forks" src="https://img.shields.io/github/forks/MatrixTM/MHDDoS?style=for-the-badge"></a>
-<a href="#"><img alt="MH-DDoS last commit (main)" src="https://img.shields.io/github/last-commit/MatrixTM/MHDDoS/main?color=green&style=for-the-badge"></a>
-<a href="#"><img alt="MH-DDoS Repo stars" src="https://img.shields.io/github/stars/MatrixTM/MHDDoS?style=for-the-badge&color=yellow"></a>
-<a href="#"><img alt="MH-DDoS License" src="https://img.shields.io/github/license/MatrixTM/MHDDoS?color=orange&style=for-the-badge"></a>
-<a href="https://github.com/MatrixTM/MHDDoS/issues"><img alt="MatrixTM issues" src="https://img.shields.io/github/issues/MatrixTM/MHDDoS?color=purple&style=for-the-badge"></a>
+<a href="#"><img alt="MH-DDoS forks" src="https://img.shields.io/github/forks/Van Helsing/Van_HelsingDoS?style=for-the-badge"></a>
+<a href="#"><img alt="MH-DDoS last commit (main)" src="https://img.shields.io/github/last-commit/Van Helsing/Van_HelsingDoS/main?color=green&style=for-the-badge"></a>
+<a href="#"><img alt="MH-DDoS Repo stars" src="https://img.shields.io/github/stars/Van Helsing/Van_HelsingDoS?style=for-the-badge&color=yellow"></a>
+<a href="#"><img alt="MH-DDoS License" src="https://img.shields.io/github/license/Van Helsing/Van_HelsingDoS?color=orange&style=for-the-badge"></a>
+<a href="https://github.com/Van Helsing/Van_HelsingDoS/issues"><img alt="Van Helsing issues" src="https://img.shields.io/github/issues/Van Helsing/Van_HelsingDoS?color=purple&style=for-the-badge"></a>
   
 <p align="center">Please Don't Attack websites without the owner's consent.</p>
 
@@ -98,13 +98,13 @@ Our social's💻
 </div>
 
  * [Matrix community Telegram channel](https://t.me/Matrix_Development)
- * [Matrix team Telegram Group](https://t.me/MatrixTMChat)
- * [GitHub](https://github.com/MatrixTM)
+ * [Matrix team Telegram Group](https://t.me/Van HelsingChat)
+ * [GitHub](https://github.com/Van Helsing)
 ### If u Like the project, leave a star on the repository!
 
 ## Downloads
 
-You can download it from [GitHub Releases](https://github.com/MatrixTM/MHDDoS/releases)
+You can download it from [GitHub Releases](https://github.com/Van Helsing/Van_HelsingDoS/releases)
 
 ### Getting Started
 
@@ -115,7 +115,7 @@ You can download it from [GitHub Releases](https://github.com/MatrixTM/MHDDoS/re
 * [impacket](https://github.com/SecureAuthCorp/impacket)
 * [requests](https://github.com/psf/requests)
 * [Python3][python3]
-* [PyRoxy](https://github.com/MatrixTM/PyRoxy)
+* [PyRoxy](https://github.com/Van Helsing/PyRoxy)
 * [icmplib](https://github.com/ValentinBELYN/icmplib)
 * [certifi](https://github.com/certifi/python-certifi)
 * [psutil](https://github.com/giampaolo/psutil)
@@ -124,27 +124,27 @@ You can download it from [GitHub Releases](https://github.com/MatrixTM/MHDDoS/re
 
 ## Documentation
 
-You can read it from [GitHub Wiki](https://github.com/MatrixTM/MHDDoS/wiki)
+You can read it from [GitHub Wiki](https://github.com/Van Helsing/Van_HelsingDoS/wiki)
 
 **Clone and Install Script**
 
 ```shell script
-git clone https://github.com/MatrixTM/MHDDoS.git
-cd MHDDoS
+git clone https://github.com/Van Helsing/Van_HelsingDoS.git
+cd Van_HelsingDoS
 pip install -r requirements.txt
 ```
 
 **One-Line Installing on Fresh VPS**
 
 ```shell script
-apt -y update && apt -y install curl wget libcurl4 libssl-dev python3 python3-pip make cmake automake autoconf m4 build-essential git && git clone https://github.com/MatrixTM/MHDDoS.git && cd MH* && pip3 install -r requirements.txt
+apt -y update && apt -y install curl wget libcurl4 libssl-dev python3 python3-pip make cmake automake autoconf m4 build-essential git && git clone https://github.com/Van Helsing/Van_HelsingDoS.git && cd MH* && pip3 install -r requirements.txt
 ```
 
 **Docker**
 
 ```shell script
-git clone https://github.com/MatrixTM/MHDDoS.git
-cd MHDDoS
+git clone https://github.com/Van Helsing/Van_HelsingDoS.git
+cd Van_HelsingDoS
 docker compose build
 # you can use the built image directly by uncommenting one line in the dockercompose
 docker compose run -it --entrypoint /bin/bash mhddos
@@ -153,7 +153,7 @@ docker compose run -it --entrypoint /bin/bash mhddos
 
 
 [python3]: https://python.org 'Python3'
-[github issues]: https://github.com/MatrixTM/MHDDoS/issues 'enter'
+[github issues]: https://github.com/Van Helsing/Van_HelsingDoS/issues 'enter'
 
 ---
 

