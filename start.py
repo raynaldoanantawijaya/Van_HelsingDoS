@@ -180,6 +180,45 @@ search_engine_agents = [
     "YandexImages/3.0 (+http://yandex.com/bots)",
     "YandexVideo/3.0 (+http://yandex.com/bots)",
     "YandexNews/3.0 (+http://yandex.com/bots)",
+    
+    # ---------------- Baidu ----------------
+    "Mozilla/5.0 (compatible; Baiduspider/2.0; +http://www.baidu.com/search/spider.html)",
+    "Baiduspider-image (+http://www.baidu.com/search/spider.html)",
+    "Baiduspider-video (+http://www.baidu.com/search/spider.html)",
+
+    # ---------------- DuckDuckGo ----------------
+    "DuckDuckBot/1.0; (+http://duckduckgo.com/duckduckbot.html)",
+    "DuckDuckBot/2.0; (+http://duckduckgo.com/duckduckbot.html)",
+
+    # ---------------- Applebot ----------------
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+    "(KHTML, like Gecko) Version/14.0 Safari/605.1.15 (Applebot/0.1; "
+    "+http://www.apple.com/go/applebot)",
+
+    # ---------------- Facebook / Social ----------------
+    "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
+    "Facebot/1.0",
+
+    # ---------------- Twitter ----------------
+    "Twitterbot/1.0",
+
+    # ---------------- LinkedIn ----------------
+    "LinkedInBot/1.0 (+https://www.linkedin.com/)",
+
+    # ---------------- Pinterest ----------------
+    "Pinterest/0.2 (+http://www.pinterest.com/bot.html)",
+
+    # ---------------- Other Major Bots ----------------
+    "Mozilla/5.0 (compatible; AhrefsBot/7.0; +http://ahrefs.com/robot/)",
+    "SemrushBot/7~bl (+http://www.semrush.com/bot.html)",
+    "MJ12bot/v1.4.8 (http://mj12bot.com/)",
+    "Sogou web spider/4.0 (+http://www.sogou.com/docs/help/webmasters.htm#07)",
+    "Exabot/3.0 (+http://www.exabot.com/go/robot)",
+    "SeznamBot/3.2 (http://napoveda.seznam.cz/seznambot-intro/)",
+    "CCBot/2.0 (+http://commoncrawl.org/faq/)",
+
+
+    "DotBot/1.1 (+http://www.opensiteexplorer.org/dotbot, help@moz.com)"
 ]
 
 class Tools:
@@ -216,42 +255,6 @@ class Tools:
 
     @staticmethod
     def human_format(num: int, ending: str = "B") -> str:
-    "Mozilla/5.0 (compatible; Baiduspider/2.0; +http://www.baidu.com/search/spider.html)",
-    "Baiduspider-image (+http://www.baidu.com/search/spider.html)",
-    "Baiduspider-video (+http://www.baidu.com/search/spider.html)",
-
-    # ---------------- DuckDuckGo ----------------
-    "DuckDuckBot/1.0; (+http://duckduckgo.com/duckduckbot.html)",
-    "DuckDuckBot/2.0; (+http://duckduckgo.com/duckduckbot.html)",
-
-    # ---------------- Applebot ----------------
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
-    "(KHTML, like Gecko) Version/14.0 Safari/605.1.15 (Applebot/0.1; "
-    "+http://www.apple.com/go/applebot)",
-
-    # ---------------- Facebook / Social ----------------
-    "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
-    "Facebot/1.0",
-
-    # ---------------- Twitter ----------------
-    "Twitterbot/1.0",
-
-    # ---------------- LinkedIn ----------------
-    "LinkedInBot/1.0 (+https://www.linkedin.com/)",
-
-    # ---------------- Pinterest ----------------
-    "Pinterest/0.2 (+http://www.pinterest.com/bot.html)",
-
-    # ---------------- Other Major Bots ----------------
-    "Mozilla/5.0 (compatible; AhrefsBot/7.0; +http://ahrefs.com/robot/)",
-    "SemrushBot/7~bl (+http://www.semrush.com/bot.html)",
-    "MJ12bot/v1.4.8 (http://mj12bot.com/)",
-    "Sogou web spider/4.0 (+http://www.sogou.com/docs/help/webmasters.htm#07)",
-    "Exabot/3.0 (+http://www.exabot.com/go/robot)",
-    "SeznamBot/3.2 (http://napoveda.seznam.cz/seznambot-intro/)",
-    "CCBot/2.0 (+http://commoncrawl.org/faq/)",
-    "DotBot/1.1 (+http://www.opensiteexplorer.org/dotbot, help@moz.com)"
-]
 
 
 class Counter:
