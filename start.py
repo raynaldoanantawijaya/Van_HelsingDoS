@@ -1077,7 +1077,7 @@ class HttpFlood(Thread):
             sock = socket(AF_INET, SOCK_STREAM)
 
         sock.setsockopt(IPPROTO_TCP, TCP_NODELAY, 1)
-        sock.settimeout(.9)
+        sock.settimeout(5.0) # [OPTIMIZED] Increased timeout for stability
         sock.connect(host or self._raw_target)
 
         if self._target.scheme.lower() == "https":
@@ -1598,7 +1598,7 @@ class HttpFlood(Thread):
                 
                 Tools.send(s, payload)
         except Exception as e:
-            # print(f"DEBUG: WP_SEARCH Error: {e}") 
+            print(f"[DEBUG] WP_SEARCH Error: {e}") 
             pass # Keep it clean for user, but structure is ready for debugging if needed
         Tools.safe_close(s)
 
