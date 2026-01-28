@@ -2025,7 +2025,13 @@ def handleProxyList(con, proxy_li, proxy_ty, url=None):
         proxies = list(set(scavenged_proxies))
         
         if proxies:
-            logger.info(f"{bcolors.OKGREEN}Scavenged {len(proxies):,} Fresh Proxies!{bcolors.RESET}")
+            logger.info(f"{bcolors.OKCYAN}Scavenged {len(proxies):,} proxies. Now Checking for Live ones... (This takes time){bcolors.RESET}")
+            # [OPTIMIZED] Verify Scavenged Proxies
+            proxies = list(ProxyChecker.checkAll(
+                set(proxies), timeout=2, threads=min(1000, len(proxies)),
+                url="http://www.google.com" # Check against a reliable target
+            ))
+            logger.info(f"{bcolors.OKGREEN}Scavenged & Verified {len(proxies):,} Live Proxies!{bcolors.RESET}")
         else:
             logger.info(f"{bcolors.FAIL}Scavenger Failed. Running Direct Attack (DANGEROUS).{bcolors.RESET}")
             proxies = None
