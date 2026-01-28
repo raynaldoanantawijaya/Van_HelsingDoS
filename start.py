@@ -255,6 +255,13 @@ class Tools:
 
     @staticmethod
     def human_format(num: int, ending: str = "B") -> str:
+        num = float('{:.3g}'.format(num))
+        magnitude = 0
+        while abs(num) >= 1024:
+            magnitude += 1
+            num /= 1024.0
+        return '{}{}{}'.format('{:f}'.format(num).rstrip('0').rstrip('.'),
+                               ['', 'K', 'M', 'G', 'T', 'P'][magnitude], ending)
 
 
 class Counter:
