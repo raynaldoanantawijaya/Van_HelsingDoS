@@ -1536,10 +1536,18 @@ class HttpFlood(Thread):
                     sleep(self._rpc / 15)
                     break
         except Exception as e:
-            if "timed out" in str(e) or "Timeout" in str(e):
-                print(f"[DEBUG] SLOW Timeout (Target Down/Block)")
+            err = str(e)
+            if "timed out" in err or "Timeout" in err:
+                print(f"[DEBUG] SLOW: Connection Held (Timeout) - Good Sign")
+            elif "[Errno 111]" in err or "Connection refused" in err:
+                pass # Suppress Proxy Refused errors
+            elif "[Errno 104]" in err or "Reset by peer" in err:
+                pass # Suppress Connection Reset errors
+            elif "Broken pipe" in err:
+                pass # Suppress Broken Pipe
             else:
-                print(f"[DEBUG] SLOW Error: {e}")
+                # print(f"[DEBUG] SLOW Error: {e}") # Suppress unknown errors too to stay clean
+                pass
         Tools.safe_close(s)
 
     def SLOW_V2(self):
