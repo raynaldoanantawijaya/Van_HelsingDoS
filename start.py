@@ -2073,9 +2073,14 @@ if __name__ == '__main__':
                 proxy_ty = int(argv[3].strip())
                 # [OPTIMIZED] Flexible Path L7
                 user_path = argv[5].strip()
-                proxy_li = Path(user_path)
-                if not proxy_li.exists():
-                    proxy_li = Path(__dir__ / "files/proxies/" / user_path)
+                
+                # Check for Direct Attack Mode
+                if user_path in {"0", "None", "NONE", "none"}:
+                    proxy_li = Path("0") # Sentinel value
+                else:
+                    proxy_li = Path(user_path)
+                    if not proxy_li.exists():
+                        proxy_li = Path(__dir__ / "files/proxies/" / user_path)
                 useragent_li = Path(__dir__ / "files/useragent.txt")
                 referers_li = Path(__dir__ / "files/referers.txt")
                 bombardier_path = Path.home() / "go/bin/bombardier"
