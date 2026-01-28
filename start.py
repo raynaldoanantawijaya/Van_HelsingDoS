@@ -1538,7 +1538,8 @@ class HttpFlood(Thread):
         except Exception as e:
             err = str(e)
             if "timed out" in err or "Timeout" in err:
-                print(f"[DEBUG] SLOW: Connection Held (Timeout) - Good Sign")
+                # print(f"[DEBUG] SLOW: Connection Held (Timeout) - Good Sign")
+                pass
             elif "[Errno 111]" in err or "Connection refused" in err:
                 pass # Suppress Proxy Refused errors
             elif "[Errno 104]" in err or "Reset by peer" in err:
