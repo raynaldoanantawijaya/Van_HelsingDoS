@@ -242,6 +242,7 @@ class Counter:
 
 REQUESTS_SENT = Counter()
 BYTES_SEND = Counter()
+TOTAL_REQUESTS_SENT = Counter()
 
 
 class Tools:
@@ -323,20 +324,22 @@ class Tools:
 
     @staticmethod
     def send(sock: socket, packet: bytes):
-        global BYTES_SEND, REQUESTS_SENT
+        global BYTES_SEND, REQUESTS_SENT, TOTAL_REQUESTS_SENT
         if not sock.send(packet):
             return False
         BYTES_SEND += len(packet)
         REQUESTS_SENT += 1
+        TOTAL_REQUESTS_SENT += 1
         return True
 
     @staticmethod
     def sendto(sock, packet, target):
-        global BYTES_SEND, REQUESTS_SENT
+        global BYTES_SEND, REQUESTS_SENT, TOTAL_REQUESTS_SENT
         if not sock.sendto(packet, target):
             return False
         BYTES_SEND += len(packet)
         REQUESTS_SENT += 1
+        TOTAL_REQUESTS_SENT += 1
         return True
 
     @staticmethod
@@ -1546,9 +1549,11 @@ class HttpFlood(Thread):
         try:
             s = self.open_connection()
             # Increment Global Counter for visual feedback
-            global REQUESTS_SENT
+            # Increment Global Counter for visual feedback
+            global REQUESTS_SENT, TOTAL_REQUESTS_SENT
             REQUESTS_SENT += 1
-            print(f"[{int(REQUESTS_SENT)}] [DEBUG] SLOW: Connected to {self._target.authority} via Proxy")
+            TOTAL_REQUESTS_SENT += 1
+            print(f"[{int(TOTAL_REQUESTS_SENT)}] [DEBUG] SLOW: Connected to {self._target.authority} via Proxy")
             for _ in range(self._rpc):
                 Tools.send(s, payload)
             
