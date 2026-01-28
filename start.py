@@ -221,7 +221,33 @@ search_engine_agents = [
     "DotBot/1.1 (+http://www.opensiteexplorer.org/dotbot, help@moz.com)"
 ]
 
+
+
+
+class Counter:
+    def __init__(self, value=0):
+        self._value = RawValue('i', value)
+
+    def __iadd__(self, value):
+        self._value.value += value
+        return self
+
+    def __int__(self):
+        return self._value.value
+
+    def set(self, value):
+        self._value.value = value
+        return self
+
+
+REQUESTS_SENT = Counter()
+BYTES_SEND = Counter()
+
+
 class Tools:
+    IP = compile("(?:\\d{1,3}\\.){3}\\d{1,3}")
+    protocolRex = compile('"protocol":(\\d+)')
+    
     @staticmethod
     def crawl(url_str):
         # [NEW] Active Reconnaissance - Scrape for Real Paths
@@ -262,31 +288,6 @@ class Tools:
             num /= 1024.0
         return '{}{}{}'.format('{:f}'.format(num).rstrip('0').rstrip('.'),
                                ['', 'K', 'M', 'G', 'T', 'P'][magnitude], ending)
-
-
-class Counter:
-    def __init__(self, value=0):
-        self._value = RawValue('i', value)
-
-    def __iadd__(self, value):
-        self._value.value += value
-        return self
-
-    def __int__(self):
-        return self._value.value
-
-    def set(self, value):
-        self._value.value = value
-        return self
-
-
-REQUESTS_SENT = Counter()
-BYTES_SEND = Counter()
-
-
-class Tools:
-    IP = compile("(?:\\d{1,3}\\.){3}\\d{1,3}")
-    protocolRex = compile('"protocol":(\\d+)')
 
     @staticmethod
     def humanbytes(i: int, binary: bool = False, precision: int = 2):
