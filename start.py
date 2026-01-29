@@ -1665,6 +1665,7 @@ class HttpFlood(Thread):
         except Exception as e:
             err = str(e)
             if "timed out" in err or "Timeout" in err:
+                 print(f"[DEBUG] WP_SEARCH: Connection Timeout (Target Lagging/Down)")
                  pass
             elif "[Errno 111]" in err or "Connection refused" in err:
                 pass
