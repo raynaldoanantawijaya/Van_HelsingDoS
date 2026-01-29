@@ -1163,7 +1163,7 @@ class HttpFlood(Thread):
         except Exception as e:
             err = str(e)
             if "timed out" in err or "Timeout" in err:
-                print(f"[DEBUG] STRESS: Connection Timeout (Target Lagging/Down)")
+                # print(f"[DEBUG] STRESS: Connection Timeout (Target Lagging/Down)")
                 pass
             elif "[Errno 111]" in err or "Connection refused" in err:
                 pass
@@ -1381,7 +1381,7 @@ class HttpFlood(Thread):
         except Exception as e:
             err = str(e)
             if "timed out" in err or "Timeout" in err:
-                print(f"[DEBUG] DYN: Connection Timeout (Target Lagging/Down)")
+                # print(f"[DEBUG] DYN: Connection Timeout (Target Lagging/Down)")
                 pass
             elif "[Errno 111]" in err or "Connection refused" in err:
                 pass
@@ -1735,7 +1735,7 @@ class HttpFlood(Thread):
         except Exception as e:
             err = str(e)
             if "timed out" in err or "Timeout" in err:
-                 print(f"[DEBUG] XMLRPC: Connection Timeout (Target Lagging/Down)")
+                 # print(f"[DEBUG] XMLRPC: Connection Timeout (Target Lagging/Down)")
                  pass
             elif "refused" in err or "Reset" in err:
                 pass
