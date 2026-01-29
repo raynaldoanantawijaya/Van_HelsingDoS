@@ -26,6 +26,17 @@ from typing import Any, List, Set, Tuple
 from urllib import parse
 from uuid import UUID, uuid4
 
+# [OPTIMIZED] Ulimit (File Descriptor) Booster
+try:
+    import resource
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if soft < 65535:
+        # Try to set to Hard Limit or 65535
+        target = min(hard, 65535)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+except ImportError:
+    pass # Windows/Non-Unix doesn't support resource module
+
 from PyRoxy import Proxy, ProxyChecker, ProxyType, ProxyUtiles
 from PyRoxy import Tools as ProxyTools
 from certifi import where
