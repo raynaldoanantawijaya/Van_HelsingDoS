@@ -2178,10 +2178,42 @@ def handleProxyList(con, proxy_li, proxy_ty, url=None):
     if str(proxy_li) in {"0", "None", "NONE", "none"}:
         return None
 
-    if proxy_ty not in {4, 5, 1, 0, 6}:
-        exit("Socks Type Not Found [4, 5, 1, 0, 6]")
+    if proxy_ty not in {4, 5, 1, 0, 6, 7}:
+        exit("Socks Type Not Found [4, 5, 1, 0, 6, 7]")
     if proxy_ty == 6:
         proxy_ty = randchoice([4, 5, 1])
+    if proxy_ty == 7: # [PHASE 7] Indonesian Scavenger Mode
+        logger.info(f"{bcolors.OKCYAN}Activating INDON-SCAVENGER: Hunting for local Indonesian proxies...{bcolors.RESET}")
+        sources = [
+            "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks5&timeout=10000&country=ID",
+            "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/socks5/socks5.txt",
+            "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies_country/ID.txt",
+            "https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies_country/ID.txt",
+            "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=ID"
+        ]
+        scavenged_proxies = []
+        for source in sources:
+            try:
+                with get(source, timeout=10) as r:
+                    if r.status_code == 200:
+                        lines = r.text.splitlines()
+                        for line in lines:
+                            if ":" in line:
+                                try:
+                                    parts = line.strip().split(":")
+                                    scavenged_proxies.append(Proxy(parts[0], int(parts[1]), ProxyType.SOCKS5))
+                                except: pass
+            except: continue
+        
+        proxies = list(set(scavenged_proxies))
+        if proxies:
+            logger.info(f"{bcolors.OKCYAN}Found {len(proxies):,} Indo Proxies. Checking for Live ones...{bcolors.RESET}")
+            proxies = list(ProxyChecker.checkAll(
+                set(proxies), timeout=2, threads=min(1000, len(proxies)),
+                url=url.human_repr() if url else "http://www.google.com"
+            ))
+            logger.info(f"{bcolors.OKGREEN}Indo-Scavenger Success! {len(proxies):,} Live local proxies found.{bcolors.RESET}")
+        return proxies
     if not proxy_li.exists():
         logger.warning(
             f"{bcolors.WARNING}The file doesn't exist, creating files and downloading proxies.{bcolors.RESET}")

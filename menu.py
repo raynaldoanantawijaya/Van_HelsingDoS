@@ -62,14 +62,20 @@ def main():
     print(f"{bcolors.HEADER}[ PROXY CONFIGURATION ]{bcolors.RESET}")
     print(f"[{bcolors.OKCYAN}1{bcolors.RESET}] Public Proxy (Auto-Scavenge/Download)")
     print(f"[{bcolors.OKCYAN}2{bcolors.RESET}] Private Proxy (From your own file)")
+    print(f"[{bcolors.OKCYAN}3{bcolors.RESET}] Indonesian Scavenger (Auto-find Indo Proxies)")
     
-    proxy_choice = input(f"{bcolors.BOLD}Choose Proxy Type (1-2): {bcolors.RESET}")
+    proxy_choice = input(f"{bcolors.BOLD}Choose Proxy Type (1-3): {bcolors.RESET}")
     
     if proxy_choice == "2":
         proxy_file = input(f"Enter proxy filename (e.g. proxy.txt): {bcolors.OKBLUE}").strip()
+        proxy_type = "5"
         print(f"{bcolors.RESET}", end="")
+    elif proxy_choice == "3":
+        proxy_file = "proxy.txt"
+        proxy_type = "7" # Indo Scavenger mode
     else:
         proxy_file = "proxy.txt"
+        proxy_type = "5"
 
     clear()
     banner()
@@ -87,8 +93,6 @@ def main():
 
     # Preparation for execution
     # MHDDoS/VanHelsing structure: python3 start.py <METHOD> <URL> <PROXY_TYPE> <THREADS> <PROXY_FILE> <RPC> <DURATION>
-    # Proxy Type mapping: SOCKS5 is usually 5
-    proxy_type = "5" 
 
     cmd = [
         "python3", "start.py",
