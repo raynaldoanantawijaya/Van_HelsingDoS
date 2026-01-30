@@ -36,10 +36,11 @@ def main():
     print(f"[{bcolors.OKCYAN}3{bcolors.RESET}] STRESS  - (High Load/Universal Stress Test)")
     print(f"[{bcolors.OKCYAN}4{bcolors.RESET}] XMLRPC  - (WordPress Amplification Method)")
     print(f"[{bcolors.OKCYAN}5{bcolors.RESET}] POST_DYN- (Phase 2: Non-Cacheable POST Flood)")
+    print(f"[{bcolors.OKCYAN}6{bcolors.RESET}] H2_FLOOD- (Phase 5: HTTP/2 Multiplexing - Fastest)")
     print("")
     
-    choice = input(f"{bcolors.BOLD}Choose Method (1-5): {bcolors.RESET}")
-    methods = {"1": "SLOW", "2": "DYN", "3": "STRESS", "4": "XMLRPC", "5": "POST_DYN"}
+    choice = input(f"{bcolors.BOLD}Choose Method (1-6): {bcolors.RESET}")
+    methods = {"1": "SLOW", "2": "DYN", "3": "STRESS", "4": "XMLRPC", "5": "POST_DYN", "6": "H2_FLOOD"}
     method = methods.get(choice, "SLOW")
 
     clear()
