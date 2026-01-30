@@ -253,10 +253,9 @@ class Counter:
 
 REQUESTS_SENT = Counter()
 BYTES_SEND = Counter()
-REQUESTS_SENT = Counter()
-BYTES_SEND = Counter()
 TOTAL_REQUESTS_SENT = Counter()
 CONNECTIONS_SENT = Counter()
+BURNED_PROXIES = set() # [PHASE 4] Blacklist for blocked proxies
 
 
 class Tools:
