@@ -926,6 +926,7 @@ class HttpFlood(Thread):
             "WP_SEARCH": self.WP_SEARCH,
             "SLOW_V2": self.SLOW_V2,
             "XMLRPC_AMP": self.XMLRPC_AMP,
+            "POST_DYN": self.POST_DYN,
         }
 
         if not referers:
