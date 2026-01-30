@@ -9,3 +9,4 @@ pyasn1==0.4.8
 pyroxy @ git+https://github.com/MatrixTM/PyRoxy.git
 yarl>=1.7.2
 httpx[http2]>=0.27.0
+socksio>=1.0.0

