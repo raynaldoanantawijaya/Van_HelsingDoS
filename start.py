@@ -1577,13 +1577,15 @@ class HttpFlood(Thread):
         proxy_url = None
         if self._proxies:
             # [PHASE 13] Use randchoice for shared pool sync
-            for _ in range(10):
+            for _ in range(20): # Increased attempts
                 p = randchoice(self._proxies)
-                burn_time = BURNED_PROXIES.get(p.proxy)
+                p_str = str(p)
+                burn_time = BURNED_PROXIES.get(p_str)
                 if not burn_time or (time() - burn_time >= COOLING_PERIOD):
                     # [PHASE 5] Smart Protocol Detection for httpx
                     prefix = "socks5://" if p.type in {ProxyType.SOCKS5, ProxyType.SOCKS4} else "http://"
-                    proxy_url = f"{prefix}{p.proxy}"
+                    proxy_url = f"{prefix}{p_str}"
+                    self._current_proxy = p_str # Keep sync with other methods
                     break
             else:
                 return # All burned, wait for recycle
