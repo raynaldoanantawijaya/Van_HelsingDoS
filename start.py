@@ -2182,14 +2182,41 @@ def handleProxyList(con, proxy_li, proxy_ty, url=None):
         exit("Socks Type Not Found [4, 5, 1, 0, 6, 7]")
     if proxy_ty == 6:
         proxy_ty = randchoice([4, 5, 1])
-    if proxy_ty == 7: # [PHASE 7] Indonesian Scavenger Mode
-        logger.info(f"{bcolors.OKCYAN}Activating INDON-SCAVENGER: Hunting for local Indonesian proxies...{bcolors.RESET}")
+    if proxy_ty == 7: # [PHASE 7, 8 & 9] INDO-PROXY ARMAGEDDON (ULTIMATE EXPANSION)
+        logger.info(f"{bcolors.OKCYAN}Activating MEGA-INDO-SCAVENGER: Hunting for EVERY available Indonesian IP...{bcolors.RESET}")
         sources = [
+            # Standard Hubs
             "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks5&timeout=10000&country=ID",
+            "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=ID",
+            "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks4&timeout=10000&country=ID",
+            "https://www.proxy-list.download/api/v1/get?type=socks5&country=ID",
+            "https://www.proxy-list.download/api/v1/get?type=https&country=ID",
+            # Specialized ID Repos
             "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/socks5/socks5.txt",
             "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies_country/ID.txt",
             "https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies_country/ID.txt",
-            "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=ID"
+            "https://raw.githubusercontent.com/yuc0/proxy-list/main/country/ID.txt",
+            "https://raw.githubusercontent.com/MuRongPIG/Proxy-Master/main/socks5.txt",
+            "https://raw.githubusercontent.com/ErcinDedeoglu/proxies/main/proxies/socks5.txt", # Generic but large
+            "https://raw.githubusercontent.com/Zloi-User/hideip.me/main/socks5.txt",
+            "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks5.txt",
+            "https://raw.githubusercontent.com/jetkai/proxy-list/main/archive/socks5.txt",
+            "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS5_RAW.txt",
+            "https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks5.txt",
+            "https://raw.githubusercontent.com/B4RC0DE-TM/proxy-list/main/SOCKS5.txt",
+            "https://raw.githubusercontent.com/UrielChaves/File-Proxy/master/Socks5.txt",
+            "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/socks5.txt",
+            "https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/socks5.txt",
+            "https://proxyspace.pro/socks5.txt",
+            "https://proxyspace.pro/http.txt",
+            "https://raw.githubusercontent.com/sunny9577/proxy-scraper/master/proxies.json",
+            "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt",
+            "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
+            "https://raw.githubusercontent.com/opsxcq/proxy-list/master/list.txt",
+            "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",
+            "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
+            "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks4.txt",
+            "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt"
         ]
         scavenged_proxies = []
         for source in sources:
@@ -2200,10 +2227,25 @@ def handleProxyList(con, proxy_li, proxy_ty, url=None):
                         for line in lines:
                             if ":" in line:
                                 try:
-                                    parts = line.strip().split(":")
-                                    scavenged_proxies.append(Proxy(parts[0], int(parts[1]), ProxyType.SOCKS5))
+                                    # Extract IP:PORT
+                                    match = re.search(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{1,5})', line)
+                                    if match:
+                                        p_str = match.group(1)
+                                        scavenged_proxies.append(Proxy(p_str.split(":")[0], int(p_str.split(":")[1]), ProxyType.SOCKS5))
                                 except: pass
             except: continue
+        
+        # Remove duplicates
+        proxies = list(set(scavenged_proxies))
+        if proxies:
+            logger.info(f"{bcolors.OKCYAN}MEGA-SCAVENGE: Found {len(proxies):,} potential IPs. Filtering for Live ones...{bcolors.RESET}")
+            # [UPGRADED] Real-time Target Latency Check
+            proxies = list(ProxyChecker.checkAll(
+                set(proxies), timeout=2, threads=min(1000, len(proxies)),
+                url=url.human_repr() if url else "http://www.google.id"
+            ))
+            logger.info(f"{bcolors.OKGREEN}Armageddon Results: {len(proxies):,} Live Indonesian Proxies ready for deployment.{bcolors.RESET}")
+        return proxies
         
         proxies = list(set(scavenged_proxies))
         if proxies:
