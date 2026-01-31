@@ -1646,7 +1646,7 @@ class HttpFlood(Thread):
                         RECYCLE_EVENT.set()
         except Exception as e:
             # [DEBUG] Report error for diagnosis
-            if REQUESTS_SENT < 100: # Only print early errors to avoid spam
+            if int(REQUESTS_SENT) < 100: # [FIX] Counter must be cast to int for comparison
                  print(f"[{int(CONNECTIONS_SENT)}] [DEBUG ERROR] H2_FLOOD: {str(e)[:100]}")
             
             # If client fails, close it so it recreates next time
