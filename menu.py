@@ -312,7 +312,10 @@ def run_intel():
                     if i > 0:
                         # Padded with spaces to overwrite previous line completely
                         print(f"{bcolors.WARNING}[-] Connection Failed. Rotating Proxy & Retrying ({i+1}/{retries})...{bcolors.RESET}{' '*20}", end="\r")
-                    return requests.get(url, **kwargs)
+                    r = requests.get(url, **kwargs)
+                    # [FIX] Clear the retry line upon success to prevent text artifacts
+                    if i > 0: print(f"{' '*80}", end="\r")
+                    return r
                 except Exception:
                     if not use_proxy: raise 
                     continue
@@ -325,7 +328,9 @@ def run_intel():
                     kwargs = get_req_kwargs()
                     if i > 0:
                         print(f"{bcolors.WARNING}[-] Connection Failed. Rotating Proxy & Retrying ({i+1}/{retries})...{bcolors.RESET}{' '*20}", end="\r")
-                    return requests.head(url, **kwargs)
+                    r = requests.head(url, **kwargs)
+                    if i > 0: print(f"{' '*80}", end="\r")
+                    return r
                 except Exception:
                     if not use_proxy: raise
                     continue
@@ -374,8 +379,8 @@ def run_intel():
     except Exception as e:
         print(f"{bcolors.FAIL}[!] Phase 3 Error: {e} (Connection failed or Max Retries){bcolors.RESET}")
 
-        # [PHASE 20] SSL Certificate Inspector (Deep Search)
-        print(f"\n{bcolors.OKCYAN}Phase 4: SSL/SNI Inspector (Deep Search)...{bcolors.RESET}")
+    # [PHASE 20] SSL Certificate Inspector (Deep Search)
+    print(f"\n{bcolors.OKCYAN}Phase 4: SSL/SNI Inspector (Deep Search)...{bcolors.RESET}")
         ssl_sans = []
         try:
              import ssl
