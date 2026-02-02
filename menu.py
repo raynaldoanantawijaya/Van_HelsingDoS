@@ -454,26 +454,52 @@ def run_sentinel():
     
     import requests
     import urllib3
+    import random
     urllib3.disable_warnings()
-    # Use Full Browser Headers to mimic real user (Bypass simple Anti-Bot)
+    
+    # [Stealth Option]
+    use_proxy = False
+    proxies = []
+    print(f"\n{bcolors.WARNING}[?] Use Proxies for Monitoring? (y/n): {bcolors.RESET}", end="")
+    if input().lower().startswith("y"):
+        use_proxy = True
+        try:
+            with open("proxy.txt", "r") as f:
+                proxies = [line.strip() for line in f if line.strip()]
+            if not proxies:
+                print(f"{bcolors.FAIL}[!] proxy.txt empty! Using Direct.{bcolors.RESET}")
+                use_proxy = False
+            else:
+                print(f"{bcolors.OKGREEN}[*] Loaded {len(proxies)} proxies.{bcolors.RESET}")
+        except:
+             print(f"{bcolors.FAIL}[!] proxy.txt not found! Using Direct.{bcolors.RESET}")
+             use_proxy = False
+
+    print(f"\n{bcolors.BOLD}[*] Monitoring {target}... (Ctrl+C to stop){bcolors.RESET}")
+    print("-" * 50)
+    
+    # Use Full Browser Headers
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9,id;q=0.8',
         'Referer': 'https://www.google.com/',
-        'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'cross-site',
-        'Sec-Fetch-User': '?1'
+        'Upgrade-Insecure-Requests': '1'
     }
     
     try:
         while True:
             timestamp = time.strftime('%H:%M:%S')
             try:
+                # Prepare Proxy
+                req_kwargs = {'headers': headers, 'timeout': 5, 'verify': False}
+                if use_proxy and proxies:
+                     p = random.choice(proxies)
+                     if "://" not in p: p = f"http://{p}"
+                     req_kwargs['proxies'] = {'http': p, 'https': p}
+
                 start_time = time.time()
-                r = requests.get(target, headers=headers, timeout=5, verify=False)
+                r = requests.get(target, **req_kwargs)
                 latency = int((time.time() - start_time) * 1000)
                 
                 status_color = bcolors.OKGREEN
