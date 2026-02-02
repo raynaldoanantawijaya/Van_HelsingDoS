@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
 import os
 import sys
 import subprocess
 import random
 import time
+import concurrent.futures
 
 class bcolors:
     HEADER = '\033[95m'
@@ -498,15 +498,25 @@ def run_intel():
                     return None
 
             print(f"[*] Scanning {len(scan_list)} subdomains with 50 threads...")
+            completed = 0
+            total = len(scan_list)
+            
             with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
                 futures = [executor.submit(check_subdomain, sub) for sub in scan_list]
                 for future in concurrent.futures.as_completed(futures):
+                    completed += 1
+                    # Progress Bar (Overwritable)
+                    print(f"[*] Scanning Progress: [{completed}/{total}] ...{' '*20}", end="\r")
+                    
                     result = future.result()
                     if result:
                         sub_domain, sub_ip, match_status, is_candidate = result
+                        # clear line before printing result
+                        print(f"{' '*60}", end="\r") 
                         print(f"[*] Found {sub_domain:<30} : {sub_ip} | {match_status}")
                         if is_candidate and not exposed_origin:
                              exposed_origin = sub_domain
+            print(f"[*] Scanning Complete!{' '*40}")
 
         except Exception as e:
             print(f"[!] Zone Hunter Error: {e}")
