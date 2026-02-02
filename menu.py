@@ -475,9 +475,10 @@ def run_sentinel():
              print(f"{bcolors.OKCYAN}[?] Select Proxy Source:{bcolors.RESET}")
              print(f"[{bcolors.OKCYAN}1{bcolors.RESET}] Public Mix (High Quantity, Low Quality)")
              print(f"[{bcolors.OKCYAN}2{bcolors.RESET}] Indonesian Only (Best for .go.id targets)")
-             
+             print(f"[{bcolors.OKCYAN}3{bcolors.RESET}] MIXED MODE (Max Ammo: Public + Indo)")
+
              rec = "2" if ".id" in target else "1"
-             p_opt = input(f"{bcolors.BOLD}Select (1/2, Rec: {rec}): {bcolors.RESET}").strip()
+             p_opt = input(f"{bcolors.BOLD}Select (1/2/3, Rec: {rec}): {bcolors.RESET}").strip()
              
              if p_opt == "1":
                  # Public Mix
@@ -486,6 +487,35 @@ def run_sentinel():
                  # Indo Only (Using ProxyScrape API for freshness)
                  print(f"{bcolors.WARNING}[*] Fetching Fresh Indo Proxies from API...{bcolors.RESET}")
                  os.system("curl -s \"https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=ID&ssl=all&anonymity=all\" > proxy.txt")
+             elif p_opt == "3":
+                 # MIXED MODE
+                 print(f"{bcolors.WARNING}[*] Fetching Mixed Proxies (Public + Indo API)...{bcolors.RESET}")
+                 os.system("curl -s https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt > public.txt")
+                 os.system("curl -s \"https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=ID&ssl=all&anonymity=all\" > indo.txt")
+                 
+                 # Combine properly with Python to avoid OS syntax issues
+                 try:
+                     with open("public.txt", "r", encoding="utf-8", errors="ignore") as f1, \
+                          open("indo.txt", "r", encoding="utf-8", errors="ignore") as f2, \
+                          open("proxy.txt", "w", encoding="utf-8") as out:
+                          
+                         c1 = f1.read()
+                         c2 = f2.read()
+                         out.write(c1 + "\n" + c2)
+                     
+                     print(f"{bcolors.OKGREEN}[+] Combined: {len(c1.splitlines())} Public + {len(c2.splitlines())} Indo{bcolors.RESET}")
+                 except Exception as e:
+                     print(f"{bcolors.FAIL}[!] Merge Error: {e}{bcolors.RESET}")
+
+                 # Cleanup
+                 if os.path.exists("public.txt"): os.remove("public.txt")
+                 if os.path.exists("indo.txt"): os.remove("indo.txt")
+                 if os.path.exists("proxy.txt"):
+                     lines = set()
+                     with open("proxy.txt", "r", encoding="utf-8", errors="ignore") as f:
+                         lines = set(f.read().splitlines())
+                     with open("proxy.txt", "w", encoding="utf-8") as f:
+                         f.write("\n".join(lines))
                  
         try:
             with open("proxy.txt", "r") as f:
