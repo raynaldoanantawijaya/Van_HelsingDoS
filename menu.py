@@ -472,7 +472,9 @@ def run_sentinel():
             else:
                 print(f"{bcolors.OKGREEN}[*] Loaded {len(proxies)} proxies.{bcolors.RESET}")
         except:
-             print(f"{bcolors.FAIL}[!] proxy.txt not found! Using Direct.{bcolors.RESET}")
+             print(f"{bcolors.FAIL}[!] proxy.txt not found!{bcolors.RESET}")
+             print(f"{bcolors.WARNING}    -> Please run Menu 3 (Indo Scavenger) first to generate proxies.{bcolors.RESET}")
+             print(f"{bcolors.FAIL}    -> Monitoring in DIRECT MODE (High Chance of 403 Blocking).{bcolors.RESET}")
              use_proxy = False
 
     print(f"\n{bcolors.BOLD}[*] Monitoring {target}... (Ctrl+C to stop){bcolors.RESET}")
