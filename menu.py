@@ -219,23 +219,100 @@ def run_intel():
         if cdn_guess != "Unknown":
             print(f"[*] CDN/WAF      : {bcolors.FAIL}{cdn_guess}{bcolors.RESET}")
 
-        # [PHASE 19] Zone Hunter (Subdomain Discovery)
-        print(f"\n{bcolors.OKCYAN}Phase 4: Zone Hunter (Origin Discovery)...{bcolors.RESET}")
-        common_subs = ["origin", "direct", "cpanel", "mail", "dev", "test", "api", "ftp", "beta", "admin", "secure", "www1", "web"]
+        # [PHASE 20] SSL Certificate Inspector (Deep Search)
+        print(f"\n{bcolors.OKCYAN}Phase 4: SSL/SNI Inspector (Deep Search)...{bcolors.RESET}")
+        ssl_sans = []
+        try:
+             import ssl
+             ctx = ssl.create_default_context()
+             ctx.check_hostname = False
+             ctx.verify_mode = ssl.CERT_NONE
+             with socket.create_connection((target_domain, 443), timeout=5) as sock:
+                 with ctx.wrap_socket(sock, server_hostname=target_domain) as ssock:
+                     cert = ssock.getpeercert()
+                     # In some python versions/platforms getpeercert() return empty if verify_mode=CERT_NONE
+                     # We might need to fetch it differently or enable verify temporarily if possible, 
+                     # but standard lib often requires a CA bundle.
+                     # Let's try to parse commonName or subjectAltName if available.
+                     # If CERT_NONE returns nothing, we skip.
+                     pass 
+             
+             # Re-try with active verification for SANs (usually safe)
+             ctx = ssl.create_default_context()
+             with socket.create_connection((target_domain, 443), timeout=5) as sock:
+                 with ctx.wrap_socket(sock, server_hostname=target_domain) as ssock:
+                     cert = ssock.getpeercert()
+                     for field in cert.get('subjectAltName', []):
+                         if field[0] == 'DNS':
+                             ssl_sans.append(field[1])
+             
+             if ssl_sans:
+                 print(f"[*] SSL SANs Found: {bcolors.OKGREEN}{len(ssl_sans)} domains{bcolors.RESET}")
+                 # Add SANs to common_subs for Zone Hunter
+                 common_subs.extend([san.split('.')[0] for san in ssl_sans if target_domain in san])
+        except Exception as e:
+             print(f"[*] SSL Inspector: {e} (Skipping)")
+
+
+        # [PHASE 19 + 20] Zone Hunter + Content Matcher
+        print(f"\n{bcolors.OKCYAN}Phase 5: Zone Hunter & Content Verification...{bcolors.RESET}")
+        
+        # Unique list
+        scan_list = list(set(common_subs))
         exposed_origin = None
         
+        # Get Main Site Signature
+        main_sig = 0
         try:
-            for sub in common_subs:
-                sub_domain = f"{sub}.{target_domain}"
+            r_main = requests.get(target_url, headers=headers, timeout=5, verify=False)
+            main_sig = len(r_main.content)
+            print(f"[*] Main Site Size : {main_sig} bytes")
+        except:
+            pass
+
+        try:
+            for sub in scan_list:
+                # Clean subdomain string
+                sub = sub.strip()
+                if not sub: continue
+                
+                # Construct full domain
+                if target_domain in sub:
+                     sub_domain = sub 
+                else:
+                     sub_domain = f"{sub}.{target_domain}"
+                
                 try:
                     sub_ip = socket.gethostbyname(sub_domain)
-                    # Check if IP is different from main (indicating potential bypass)
+                    
                     if sub_ip != resolved_ip:
-                        print(f"[*] Found {sub_domain:<25} : {bcolors.FAIL}{sub_ip} (POTENTIAL ORIGIN!){bcolors.RESET}")
-                        if not exposed_origin and cdn_guess != "Unknown":
-                            exposed_origin = sub_domain # Save first candidate
-                    else:
-                        print(f"[*] Found {sub_domain:<25} : {bcolors.OKGREEN}{sub_ip} (Same as Main){bcolors.RESET}")
+                        # [PHASE 20] Content Verification
+                        match_status = f"{bcolors.WARNING}UNVERIFIED{bcolors.RESET}"
+                        is_origin_candidate = False
+                        
+                        try:
+                            # Verify Content
+                            r_check = requests.get(f"http://{sub_domain}", headers=headers, timeout=3)
+                            check_sig = len(r_check.content)
+                            
+                            # Simple +/- 10% size tolerance or exact title match logic
+                            if main_sig > 0:
+                                ratio = abs(main_sig - check_sig) / main_sig
+                                if ratio < 0.2: # 20% difference allowed
+                                    match_status = f"{bcolors.FAIL}CONFIRMED ORIGIN!{bcolors.RESET}"
+                                    is_origin_candidate = True
+                                else:
+                                    match_status = f"{bcolors.OKCYAN}Content Mismatch{bcolors.RESET}"
+                        except:
+                            match_status = "Dead/Timeout"
+
+                        print(f"[*] Found {sub_domain:<30} : {sub_ip} | {match_status}")
+                        
+                        if is_origin_candidate and not exposed_origin:
+                            exposed_origin = sub_domain
+                            
+                    # else:
+                        # print(f"[*] Found {sub_domain:<25} : {bcolors.OKGREEN}Cloudflare IP{bcolors.RESET}")
                 except:
                     pass
         except Exception as e:
