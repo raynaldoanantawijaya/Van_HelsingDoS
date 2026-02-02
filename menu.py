@@ -443,8 +443,7 @@ def run_intel():
         # Get Main Site Signature
         main_sig = 0
         try:
-            kwargs = get_req_kwargs()
-            r_main = requests.get(target_url, **kwargs)
+            r_main = get_robust_response(target_url)
             main_sig = len(r_main.content)
             print(f"[*] Main Site Size : {main_sig} bytes")
         except:
@@ -471,9 +470,8 @@ def run_intel():
                         is_origin_candidate = False
                         
                         try:
-                            # Verify Content
-                            kwargs = get_req_kwargs()
-                            r_check = requests.get(f"http://{sub_domain}", **kwargs)
+                            # Verify Content with Robust Retry
+                            r_check = get_robust_response(f"http://{sub_domain}", retries=3) # Limit retries for subdomains to avoid hanging too long
                             check_sig = len(r_check.content)
                             
                             # Simple +/- 10% size tolerance or exact title match logic
@@ -493,7 +491,7 @@ def run_intel():
                             exposed_origin = sub_domain
                             
                     # else:
-                        # print(f"[*] Found {sub_domain:<25} : {bcolors.OKGREEN}Cloudflare IP{bcolors.RESET}")
+                        # print(f"[*] Found {sub_domain:<25} : {bcolors.OKGREEN}Cloudflare/WAF IP{bcolors.RESET}")
                 except:
                     pass
         except Exception as e:
