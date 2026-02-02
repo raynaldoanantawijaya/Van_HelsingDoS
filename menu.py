@@ -3,6 +3,7 @@ import os
 import sys
 import subprocess
 import random
+import time
 
 class bcolors:
     HEADER = '\033[95m'
@@ -41,12 +42,18 @@ def main():
     
     # [PHASE 17] Attack Intel Module
     print(f"[{bcolors.OKCYAN}7{bcolors.RESET}] ATTACK INTEL (Origin Scan + Auto-Rec)")
+    
+    # [PHASE 23] Sentinel Monitor
+    print(f"[{bcolors.OKCYAN}8{bcolors.RESET}] SENTINEL     (Live Target Monitor)")
     print("")
     
-    choice = input(f"{bcolors.BOLD}Choose Method (1-7): {bcolors.RESET}")
+    choice = input(f"{bcolors.BOLD}Choose Method (1-8): {bcolors.RESET}")
     
     if choice == "7":
         run_intel()
+        sys.exit(0)
+    elif choice == "8":
+        run_sentinel()
         sys.exit(0)
 
     methods = {"1": "SLOW", "2": "DYN", "3": "STRESS", "4": "XMLRPC", "5": "POST_DYN", "6": "H2_FLOOD"}
@@ -401,6 +408,25 @@ def run_intel():
              except Exception as e:
                 print(f"Error: {e}")
 
+        # [PHASE 22] Intel Recorder (Save Report)
+        print(f"\n{bcolors.OKCYAN}[?] Save Intel Report to 'intel_report.txt'? (y/n): {bcolors.RESET}", end="")
+        if input().lower().startswith("y"):
+             try:
+                 with open("intel_report.txt", "a") as f:
+                     f.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Target: {target_url}\n")
+                     f.write(f"   IP: {resolved_ip}\n")
+                     f.write(f"   Server: {server_header}\n")
+                     if cdn_guess != "Unknown": f.write(f"   WAF: {cdn_guess}\n")
+                     if open_ports: f.write(f"   Open Ports: {open_ports}\n")
+                     if exposed_origin: f.write(f"   Exposed Origin: {exposed_origin}\n")
+                     if vuln_vector: f.write(f"   Vulnerability: {vuln_vector}\n")
+                     if ssl_sans: f.write(f"   SSL SANs: {', '.join(ssl_sans[:5])}...\n")
+                     f.write(f"   Recommended: {rec_method}\n")
+                     f.write("-" * 40 + "\n")
+                 print(f"{bcolors.OKGREEN}[+] Report Saved!{bcolors.RESET}")
+             except Exception as e:
+                 print(f"{bcolors.FAIL}[!] Failed to save report: {e}{bcolors.RESET}")
+
     except ImportError:
          print(f"{bcolors.FAIL}[!] Missing requests library. run 'pip install requests'{bcolors.RESET}")
     except Exception as e:
@@ -409,6 +435,56 @@ def run_intel():
     print("\nPress Enter to return to menu...")
     input()
     main()
+
+def run_sentinel():
+    clear()
+    banner()
+    print(f"{bcolors.HEADER}[ SENTINEL - LIVE TARGET MONITOR ]{bcolors.RESET}")
+    target = input(f"Enter Target URL (e.g. https://example.com): {bcolors.OKBLUE}").strip()
+    print(f"{bcolors.RESET}", end="")
+    
+    if not target.startswith("http"):
+        target = "https://" + target
+        
+    print(f"\n{bcolors.BOLD}[*] Monitoring {target}... (Ctrl+C to stop){bcolors.RESET}")
+    print("-" * 50)
+    
+    import requests
+    import urllib3
+    urllib3.disable_warnings()
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Sentinel/1.0'}
+    
+    try:
+        while True:
+            timestamp = time.strftime('%H:%M:%S')
+            try:
+                start_time = time.time()
+                r = requests.get(target, headers=headers, timeout=5, verify=False)
+                latency = int((time.time() - start_time) * 1000)
+                
+                status_color = bcolors.OKGREEN
+                if r.status_code >= 500:
+                    status_color = bcolors.FAIL
+                elif r.status_code >= 400:
+                    status_color = bcolors.WARNING
+                elif latency > 1000:
+                   status_color = bcolors.WARNING
+                
+                print(f"[{timestamp}] Status: {status_color}{r.status_code}{bcolors.RESET} | Time: {latency}ms")
+                
+            except requests.exceptions.Timeout:
+                print(f"[{timestamp}] Status: {bcolors.FAIL}TIMEOUT{bcolors.RESET} | Target is Lagging/Down!")
+            except requests.exceptions.ConnectionError:
+                print(f"[{timestamp}] Status: {bcolors.FAIL}DOWN{bcolors.RESET}    | Connection Refused/Died!")
+            except Exception as e:
+                print(f"[{timestamp}] Status: {bcolors.FAIL}ERROR{bcolors.RESET}   | {e}")
+            
+            time.sleep(2)
+            
+    except KeyboardInterrupt:
+        print(f"\n{bcolors.WARNING}Sentinel Stopped.{bcolors.RESET}")
+        time.sleep(1)
+        main()
 
 if __name__ == "__main__":
     main()
