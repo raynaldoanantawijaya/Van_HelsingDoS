@@ -391,21 +391,21 @@ def run_intel():
         except: pass
 
         # [PHASE 29] WAF Stress Probe 🛡️
-        if cdn_guess != "Unknown":
-            print("[*] Probing WAF Sensitivity...", end="\r")
-            try:
-                # Send benign SQLi payload
-                payload_url = f"{target_url}?search=' OR 1=1"
-                r_waf = get_robust_response(payload_url, retries=2)
-                
-                if r_waf.status_code in [403, 406, 501]:
-                    print(f"[*] WAF Status   : {bcolors.OKGREEN}ACTIVE & SENSITIVE (Blocking SQLi){bcolors.RESET}   ")
-                elif r_waf.status_code == 200:
-                    print(f"[*] WAF Status   : {bcolors.FAIL}PASSIVE/BYPASSED (Payload Accepted){bcolors.RESET}   ")
-                else: 
-                     print(f"[*] WAF Status   : Unknown ({r_waf.status_code})           ")
-            except:
-                print(f"[*] WAF Status   : Blocking Connection (Highly Sensitive)   ")
+        # [UPDATED] Running WAF Probe for ALL targets (including hidden WAFs)
+        print("[*] Probing WAF Sensitivity...", end="\r")
+        try:
+            # Send benign SQLi payload
+            payload_url = f"{target_url}?search=' OR 1=1"
+            r_waf = get_robust_response(payload_url, retries=2)
+            
+            if r_waf.status_code in [403, 406, 501]:
+                print(f"[*] WAF Status   : {bcolors.OKGREEN}ACTIVE & SENSITIVE (Blocking SQLi){bcolors.RESET}   ")
+            elif r_waf.status_code == 200:
+                print(f"[*] WAF Status   : {bcolors.FAIL}PASSIVE/BYPASSED (Payload Accepted){bcolors.RESET}   ")
+            else: 
+                 print(f"[*] WAF Status   : Unknown ({r_waf.status_code})           ")
+        except:
+            print(f"[*] WAF Status   : Blocking Connection (Highly Sensitive)   ")
              
     except Exception as e:
         print(f"{bcolors.FAIL}[!] Phase 3 Error: {e} (Connection failed or Max Retries){bcolors.RESET}")
