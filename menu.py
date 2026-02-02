@@ -282,7 +282,8 @@ def run_intel():
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
         
         def _get_req_kwargs():
-            kwargs = {'headers': headers, 'timeout': 10, 'verify': False}
+            # [OPTIMIZATION] Reduced timeout from 10s to 4s for faster rotation
+            kwargs = {'headers': headers, 'timeout': 4, 'verify': False}
             if use_proxy and proxy_list:
                 p = random.choice(proxy_list)
                 if "://" not in p: p = f"http://{p}"
