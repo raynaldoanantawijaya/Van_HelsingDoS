@@ -246,20 +246,33 @@ def run_intel():
     print(f"\n{bcolors.OKCYAN}Phase 2: Port & Backend Scanner...{bcolors.RESET}")
     open_ports = []
     interesting_ports = [80, 443, 8080, 8443, 2052, 2053, 2082, 2083, 2086, 2087, 8880]
-    try:
-        import socket
-        for port in interesting_ports:
+    
+    def check_port(port):
+        try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(0.5)
+            sock.settimeout(2) # Increased timeout for accuracy since we are threaded
             result = sock.connect_ex((target_domain, port))
+            sock.close()
             if result == 0:
                 print(f"[*] Port {port:<5} : {bcolors.OKGREEN}OPEN{bcolors.RESET}")
-                open_ports.append(port)
-            sock.close()
+                return port
+        except:
+            pass
+        return None
+
+    try:
+        import socket
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+            futures = [executor.submit(check_port, p) for p in interesting_ports]
+            for future in concurrent.futures.as_completed(futures):
+                p = future.result()
+                if p: open_ports.append(p)
+
         if not open_ports:
             print(f"[*] Ports      : {bcolors.WARNING}No common opened ports found (FW Blocked?){bcolors.RESET}")
-    except:
-        pass
+    except Exception as e:
+        print(f"[!] Port Scan Error: {e}")
 
     print(f"\n{bcolors.OKCYAN}Phase 3: CMS & Vulnerability Hunter...{bcolors.RESET}")
     # Initialize Defaults
