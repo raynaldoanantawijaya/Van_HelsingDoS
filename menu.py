@@ -320,11 +320,9 @@ def run_intel():
         # [PHASE 24] CRT.SH Deep Subdomain Recon
         print(f"\n{bcolors.OKCYAN}Phase 4.5: CRT.SH Certificate Search...{bcolors.RESET}")
         try:
-             # Use current session kwargs (supports stealth proxy if enabled)
-             kwargs = get_req_kwargs() 
              # CRT.SH often times out with proxies, so we try with text/html or json
              crt_url = f"https://crt.sh/?q=%.{target_domain}&output=json"
-             r_crt = requests.get(crt_url, **kwargs)
+             r_crt = get_robust_response(crt_url)
              
              if r_crt.status_code == 200:
                  try:
