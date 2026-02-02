@@ -490,4 +490,8 @@ def run_sentinel():
         main()
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print(f"\n{bcolors.WARNING}Exiting Van Helsing...{bcolors.RESET}")
+        sys.exit(0)
