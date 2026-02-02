@@ -464,50 +464,52 @@ def run_intel():
             pass
 
         try:
-            for sub in scan_list:
-                # Clean subdomain string
+            def check_subdomain(sub):
                 sub = sub.strip()
-                if not sub: continue
+                if not sub: return None
                 
-                # Construct full domain
-                if target_domain in sub:
-                     sub_domain = sub 
-                else:
-                     sub_domain = f"{sub}.{target_domain}"
+                if target_domain in sub: sub_domain = sub 
+                else: sub_domain = f"{sub}.{target_domain}"
                 
                 try:
                     sub_ip = socket.gethostbyname(sub_domain)
+                    if sub_ip == resolved_ip: return None # Skip same IP (Cloudflare/WAF)
                     
-                    if sub_ip != resolved_ip:
-                        # [PHASE 20] Content Verification
-                        match_status = f"{bcolors.WARNING}UNVERIFIED{bcolors.RESET}"
-                        is_origin_candidate = False
+                    match_status = f"{bcolors.WARNING}UNVERIFIED{bcolors.RESET}"
+                    is_origin_candidate = False
+                    
+                    try:
+                        # Verify Content with Robust Retry (Low retries for speed)
+                        r_check = get_robust_response(f"http://{sub_domain}", retries=2) 
+                        check_sig = len(r_check.content)
                         
-                        try:
-                            # Verify Content with Robust Retry
-                            r_check = get_robust_response(f"http://{sub_domain}", retries=3) # Limit retries for subdomains to avoid hanging too long
-                            check_sig = len(r_check.content)
-                            
-                            # Simple +/- 10% size tolerance or exact title match logic
-                            if main_sig > 0:
-                                ratio = abs(main_sig - check_sig) / main_sig
-                                if ratio < 0.2: # 20% difference allowed
-                                    match_status = f"{bcolors.FAIL}CONFIRMED ORIGIN!{bcolors.RESET}"
-                                    is_origin_candidate = True
-                                else:
-                                    match_status = f"{bcolors.OKCYAN}Content Mismatch{bcolors.RESET}"
-                        except:
-                            match_status = "Dead/Timeout"
-
-                        print(f"[*] Found {sub_domain:<30} : {sub_ip} | {match_status}")
-                        
-                        if is_origin_candidate and not exposed_origin:
-                            exposed_origin = sub_domain
-                            
-                    # else:
-                        # print(f"[*] Found {sub_domain:<25} : {bcolors.OKGREEN}Cloudflare/WAF IP{bcolors.RESET}")
+                        if main_sig > 0:
+                            ratio = abs(main_sig - check_sig) / main_sig
+                            if ratio < 0.2:
+                                match_status = f"{bcolors.FAIL}CONFIRMED ORIGIN!{bcolors.RESET}"
+                                is_origin_candidate = True
+                            else:
+                                match_status = f"{bcolors.OKCYAN}Content Mismatch{bcolors.RESET}"
+                    except:
+                        match_status = "Dead/Timeout"
+                    
+                    return (sub_domain, sub_ip, match_status, is_origin_candidate)
                 except:
-                    pass
+                    return None
+
+            print(f"[*] Scanning {len(scan_list)} subdomains with 50 threads...")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+                futures = [executor.submit(check_subdomain, sub) for sub in scan_list]
+                for future in concurrent.futures.as_completed(futures):
+                    result = future.result()
+                    if result:
+                        sub_domain, sub_ip, match_status, is_candidate = result
+                        print(f"[*] Found {sub_domain:<30} : {sub_ip} | {match_status}")
+                        if is_candidate and not exposed_origin:
+                             exposed_origin = sub_domain
+
+        except Exception as e:
+            print(f"[!] Zone Hunter Error: {e}")
         except Exception as e:
             print(f"[!] Zone Hunter Error: {e}")
 
