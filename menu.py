@@ -480,9 +480,12 @@ def run_sentinel():
              p_opt = input(f"{bcolors.BOLD}Select (1/2, Rec: {rec}): {bcolors.RESET}").strip()
              
              if p_opt == "1":
-                 os.system("wget -O proxy.txt https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt")
+                 # Public Mix
+                 os.system("curl -s https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt > proxy.txt")
              elif p_opt == "2":
-                 os.system("curl -s https://raw.githubusercontent.com/RxSilver/proxies/main/http_indo.txt > proxy.txt")
+                 # Indo Only (Using ProxyScrape API for freshness)
+                 print(f"{bcolors.WARNING}[*] Fetching Fresh Indo Proxies from API...{bcolors.RESET}")
+                 os.system("curl -s \"https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=ID&ssl=all&anonymity=all\" > proxy.txt")
                  
         try:
             with open("proxy.txt", "r") as f:
