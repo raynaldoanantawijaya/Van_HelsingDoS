@@ -182,13 +182,23 @@ def run_intel():
              p_opt = input(f"{bcolors.BOLD}Select (1/2/3, Rec: {rec}): {bcolors.RESET}").strip()
              
              if p_opt == "1":
+                 print(f"{bcolors.WARNING}[*] Fetching Public Mix from multiple sources...{bcolors.RESET}")
                  os.system("curl -s https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt > proxy.txt")
+                 os.system("curl -s https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt >> proxy.txt")
+                 os.system("curl -s https://raw.githubusercontent.com/zloi-user/hideip.me/main/http.txt >> proxy.txt")
+                 os.system("curl -s https://raw.githubusercontent.com/prxchk/proxy-list/main/http.txt >> proxy.txt")
              elif p_opt == "2":
                  print(f"{bcolors.WARNING}[*] Fetching Fresh Indo Proxies from API...{bcolors.RESET}")
                  os.system("curl -s \"https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=ID&ssl=all&anonymity=all\" > proxy.txt")
              elif p_opt == "3":
-                 print(f"{bcolors.WARNING}[*] Fetching Mixed Proxies (Public + Indo API)...{bcolors.RESET}")
+                 print(f"{bcolors.WARNING}[*] Fetching Mixed Proxies (Mega-Pack: Public + Indo API)...{bcolors.RESET}")
+                 # 1. Download Public Lists
                  os.system("curl -s https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt > public.txt")
+                 os.system("curl -s https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt >> public.txt")
+                 os.system("curl -s https://raw.githubusercontent.com/zloi-user/hideip.me/main/http.txt >> public.txt")
+                 os.system("curl -s https://raw.githubusercontent.com/prxchk/proxy-list/main/http.txt >> public.txt")
+                 
+                 # 2. Download Indo List
                  os.system("curl -s \"https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=ID&ssl=all&anonymity=all\" > indo.txt")
                  try:
                      with open("public.txt", "r", encoding="utf-8", errors="ignore") as f1, \
@@ -200,6 +210,15 @@ def run_intel():
                  except: pass
                  if os.path.exists("public.txt"): os.remove("public.txt")
                  if os.path.exists("indo.txt"): os.remove("indo.txt")
+                 
+                 # 3. Clean Duplicates
+                 if os.path.exists("proxy.txt"):
+                      unique_lines = set()
+                      with open("proxy.txt", "r", encoding="utf-8", errors="ignore") as f:
+                          for line in f:
+                              if ":" in line: unique_lines.add(line.strip())
+                      with open("proxy.txt", "w", encoding="utf-8") as f:
+                          f.write("\n".join(unique_lines))
 
         print(f"{bcolors.OKCYAN}[*] Loading proxies from proxy.txt...{bcolors.RESET}")
         try:
