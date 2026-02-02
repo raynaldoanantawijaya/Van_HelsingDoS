@@ -473,9 +473,28 @@ def run_sentinel():
                 print(f"{bcolors.OKGREEN}[*] Loaded {len(proxies)} proxies.{bcolors.RESET}")
         except:
              print(f"{bcolors.FAIL}[!] proxy.txt not found!{bcolors.RESET}")
-             print(f"{bcolors.WARNING}    -> Please run Menu 3 (Indo Scavenger) first to generate proxies.{bcolors.RESET}")
-             print(f"{bcolors.FAIL}    -> Monitoring in DIRECT MODE (High Chance of 403 Blocking).{bcolors.RESET}")
-             use_proxy = False
+             print(f"{bcolors.OKCYAN}[?] Auto-Download Proxies?{bcolors.RESET}")
+             print(f"[{bcolors.OKCYAN}1{bcolors.RESET}] Public Mix")
+             print(f"[{bcolors.OKCYAN}2{bcolors.RESET}] Indonesian Only")
+             p_opt = input(f"{bcolors.BOLD}Select (1/2 or Enter to skip): {bcolors.RESET}").strip()
+             
+             if p_opt == "1":
+                 os.system("wget -O proxy.txt https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt")
+             elif p_opt == "2":
+                 # Simple trick: run start.py in dry run or just download raw indo list if hosted, 
+                 # but for now let's use a public ইন্দো list or fallback to public mix if no specific source ready.
+                 # BETTER: Re-use the scraper logic or download a known list.
+                 # Since we are in menu.py, we can download a curated list.
+                 os.system("curl -s https://raw.githubusercontent.com/RxSilver/proxies/main/http_indo.txt > proxy.txt")
+                 
+             # Reload
+             try:
+                 with open("proxy.txt", "r") as f:
+                     proxies = [line.strip() for line in f if line.strip()]
+                 print(f"{bcolors.OKGREEN}[*] Loaded {len(proxies)} proxies.{bcolors.RESET}")
+             except:
+                 print(f"{bcolors.FAIL}[!] Download failed. Using Direct.{bcolors.RESET}")
+                 use_proxy = False
 
     print(f"\n{bcolors.BOLD}[*] Monitoring {target}... (Ctrl+C to stop){bcolors.RESET}")
     print("-" * 50)
