@@ -245,8 +245,7 @@ def run_intel():
              raise Exception("Max retries exceeded")
 
         # 1. Base Check
-        kwargs = get_req_kwargs()
-        r = requests.head(target_url, **kwargs)
+        r = head_robust_response(target_url)
         server_header = r.headers.get('Server', 'Unknown')
         powered_by = r.headers.get('X-Powered-By', 'Unknown')
         
@@ -254,9 +253,7 @@ def run_intel():
         print("[*] Checking for WordPress XML-RPC...", end="\r")
         try:
             xml_url = f"{target_url}/xmlrpc.php"
-            # Rotate proxy again for next request
-            kwargs = get_req_kwargs()
-            r_xml = requests.get(xml_url, **kwargs)
+            r_xml = get_robust_response(xml_url)
             if r_xml.status_code == 405 or "XML-RPC server accepts POST requests only" in r_xml.text:
                 print(f"[*] XML-RPC      : {bcolors.FAIL}VULNERABLE (Use Menu 4!){bcolors.RESET}   ")
                 cms_detected = "WordPress"
