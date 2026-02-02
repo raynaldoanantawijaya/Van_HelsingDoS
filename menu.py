@@ -199,9 +199,18 @@ def run_intel():
         pass
 
     print(f"\n{bcolors.OKCYAN}Phase 3: CMS & Vulnerability Hunter...{bcolors.RESET}")
+    # Initialize Defaults
     cms_detected = "Unknown"
     vuln_vector = None
+    server_header = "Unknown"
+    cdn_guess = "Unknown"
     
+    # helper scope
+    get_req_kwargs = None
+    get_robust_response = None
+    head_robust_response = None
+    
+    # Setup Block
     try:
         import requests
         import urllib3
@@ -209,32 +218,27 @@ def run_intel():
         
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
         
-        def get_req_kwargs():
+        def _get_req_kwargs():
             kwargs = {'headers': headers, 'timeout': 10, 'verify': False}
             if use_proxy and proxy_list:
-                # Rotation logic
                 p = random.choice(proxy_list)
-                # Basic format handling
-                if "://" not in p:
-                     p = f"http://{p}"
+                if "://" not in p: p = f"http://{p}"
                 kwargs['proxies'] = {'http': p, 'https': p}
             return kwargs
-            
-        def get_robust_response(url, retries=3):
-            # Tries to fetch URL, rotating proxies on failure
+        get_req_kwargs = _get_req_kwargs
+
+        def _get_robust_response(url, retries=3):
             for i in range(retries):
                 try:
                     kwargs = get_req_kwargs()
                     return requests.get(url, **kwargs)
                 except Exception:
-                    # If direct mode validation fails, break immediately
-                    if not use_proxy:
-                        raise 
-                    # If proxy mode, try next proxy
+                    if not use_proxy: raise 
                     continue
             raise Exception("Max retries exceeded with proxies")
+        get_robust_response = _get_robust_response
             
-        def head_robust_response(url, retries=3):
+        def _head_robust_response(url, retries=3):
              for i in range(retries):
                 try:
                     kwargs = get_req_kwargs()
@@ -243,13 +247,34 @@ def run_intel():
                     if not use_proxy: raise
                     continue
              raise Exception("Max retries exceeded")
+        head_robust_response = _head_robust_response
 
+    except ImportError:
+         print(f"{bcolors.FAIL}[!] Missing requests library.{bcolors.RESET}")
+         return
+
+    # Phase 3 Logic Block
+    try:
         # 1. Base Check
         r = head_robust_response(target_url)
         server_header = r.headers.get('Server', 'Unknown')
         powered_by = r.headers.get('X-Powered-By', 'Unknown')
-        
-        # 2. WordPress XMLRPC Check
+        print(f"[*] Server       : {bcolors.OKGREEN}{server_header}{bcolors.RESET}")
+
+        # 2. WAF Detection
+        wafs = {
+            "cloudflare": "Cloudflare", "akamai": "Akamai", "fastly": "Fastly", 
+            "imperva": "Imperva", "incapsula": "Imperva", "sucuri": "Sucuri"
+        }
+        headers_str = str(r.headers).lower()
+        for key, name in wafs.items():
+            if key in headers_str:
+                cdn_guess = name
+                break
+        if cdn_guess != "Unknown":
+            print(f"[*] CDN/WAF      : {bcolors.FAIL}{cdn_guess}{bcolors.RESET}")
+
+        # 3. WordPress XMLRPC Check
         print("[*] Checking for WordPress XML-RPC...", end="\r")
         try:
             xml_url = f"{target_url}/xmlrpc.php"
@@ -262,26 +287,9 @@ def run_intel():
                  print(f"[*] XML-RPC      : Safe/Not Found           ")
         except:
              print(f"[*] XML-RPC      : Error Checking           ")
-
-        # 3. WAF Detection
-        cdn_guess = "Unknown"
-        wafs = {
-            "cloudflare": "Cloudflare",
-            "akamai": "Akamai",
-            "fastly": "Fastly",
-            "imperva": "Imperva",
-            "incapsula": "Imperva",
-            "sucuri": "Sucuri"
-        }
-        headers_str = str(r.headers).lower()
-        for key, name in wafs.items():
-            if key in headers_str:
-                cdn_guess = name
-                break
-        
-        print(f"[*] Server       : {bcolors.OKGREEN}{server_header}{bcolors.RESET}")
-        if cdn_guess != "Unknown":
-            print(f"[*] CDN/WAF      : {bcolors.FAIL}{cdn_guess}{bcolors.RESET}")
+             
+    except Exception as e:
+        print(f"{bcolors.FAIL}[!] Phase 3 Error: {e} (Connection failed or Max Retries){bcolors.RESET}")
 
         # [PHASE 20] SSL Certificate Inspector (Deep Search)
         print(f"\n{bcolors.OKCYAN}Phase 4: SSL/SNI Inspector (Deep Search)...{bcolors.RESET}")
