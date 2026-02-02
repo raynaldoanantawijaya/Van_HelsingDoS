@@ -463,18 +463,16 @@ def run_sentinel():
     print(f"\n{bcolors.WARNING}[?] Use Proxies for Monitoring? (y/n): {bcolors.RESET}", end="")
     if input().lower().startswith("y"):
         use_proxy = True
-        try:
-            with open("proxy.txt", "r") as f:
-                proxies = [line.strip() for line in f if line.strip()]
-            if not proxies:
-                print(f"{bcolors.FAIL}[!] proxy.txt empty! Using Direct.{bcolors.RESET}")
-                use_proxy = False
-            else:
-                print(f"{bcolors.OKGREEN}[*] Loaded {len(proxies)} proxies.{bcolors.RESET}")
-        except:
-             print(f"{bcolors.FAIL}[!] proxy.txt not found!{bcolors.RESET}")
-             print(f"{bcolors.OKCYAN}[?] Auto-Download Proxies?{bcolors.RESET}")
-             print(f"{bcolors.OKCYAN}[?] Auto-Download Proxies?{bcolors.RESET}")
+        
+        # Check if we should refresh the list
+        need_download = True
+        if os.path.exists("proxy.txt"):
+             print(f"{bcolors.OKCYAN}[?] proxy.txt found. Refresh/Replace it? (y/n): {bcolors.RESET}", end="")
+             if not input().lower().startswith("y"):
+                 need_download = False
+        
+        if need_download:
+             print(f"{bcolors.OKCYAN}[?] Select Proxy Source:{bcolors.RESET}")
              print(f"[{bcolors.OKCYAN}1{bcolors.RESET}] Public Mix (High Quantity, Low Quality)")
              print(f"[{bcolors.OKCYAN}2{bcolors.RESET}] Indonesian Only (Best for .go.id targets)")
              
@@ -485,6 +483,18 @@ def run_sentinel():
                  os.system("wget -O proxy.txt https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt")
              elif p_opt == "2":
                  os.system("curl -s https://raw.githubusercontent.com/RxSilver/proxies/main/http_indo.txt > proxy.txt")
+                 
+        try:
+            with open("proxy.txt", "r") as f:
+                proxies = [line.strip() for line in f if line.strip()]
+            if not proxies:
+                print(f"{bcolors.FAIL}[!] proxy.txt empty! Using Direct.{bcolors.RESET}")
+                use_proxy = False
+            else:
+                print(f"{bcolors.OKGREEN}[*] Loaded {len(proxies)} proxies.{bcolors.RESET}")
+        except:
+             print(f"{bcolors.FAIL}[!] proxy.txt not found! Using Direct.{bcolors.RESET}")
+             use_proxy = False
                  
              # Reload
              try:
