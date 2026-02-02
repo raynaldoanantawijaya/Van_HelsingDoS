@@ -474,17 +474,16 @@ def run_sentinel():
         except:
              print(f"{bcolors.FAIL}[!] proxy.txt not found!{bcolors.RESET}")
              print(f"{bcolors.OKCYAN}[?] Auto-Download Proxies?{bcolors.RESET}")
-             print(f"[{bcolors.OKCYAN}1{bcolors.RESET}] Public Mix")
-             print(f"[{bcolors.OKCYAN}2{bcolors.RESET}] Indonesian Only")
-             p_opt = input(f"{bcolors.BOLD}Select (1/2 or Enter to skip): {bcolors.RESET}").strip()
+             print(f"{bcolors.OKCYAN}[?] Auto-Download Proxies?{bcolors.RESET}")
+             print(f"[{bcolors.OKCYAN}1{bcolors.RESET}] Public Mix (High Quantity, Low Quality)")
+             print(f"[{bcolors.OKCYAN}2{bcolors.RESET}] Indonesian Only (Best for .go.id targets)")
+             
+             rec = "2" if ".id" in target else "1"
+             p_opt = input(f"{bcolors.BOLD}Select (1/2, Rec: {rec}): {bcolors.RESET}").strip()
              
              if p_opt == "1":
                  os.system("wget -O proxy.txt https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt")
              elif p_opt == "2":
-                 # Simple trick: run start.py in dry run or just download raw indo list if hosted, 
-                 # but for now let's use a public ইন্দো list or fallback to public mix if no specific source ready.
-                 # BETTER: Re-use the scraper logic or download a known list.
-                 # Since we are in menu.py, we can download a curated list.
                  os.system("curl -s https://raw.githubusercontent.com/RxSilver/proxies/main/http_indo.txt > proxy.txt")
                  
              # Reload
@@ -533,10 +532,13 @@ def run_sentinel():
                 
                 print(f"[{timestamp}] Status: {status_color}{r.status_code}{bcolors.RESET} | Time: {latency}ms")
                 
-            except requests.exceptions.Timeout:
-                print(f"[{timestamp}] Status: {bcolors.FAIL}TIMEOUT{bcolors.RESET} | Target is Lagging/Down!")
+            except (requests.exceptions.ProxyError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
+                 # Most likely Proxy issues if proxy is enabled
+                 msg = "TIMEOUT" if not use_proxy else "PROXY LAG"
+                 print(f"[{timestamp}] Status: {bcolors.WARNING}{msg}{bcolors.RESET} | Retrying with new proxy...")
             except requests.exceptions.ConnectionError:
-                print(f"[{timestamp}] Status: {bcolors.FAIL}DOWN{bcolors.RESET}    | Connection Refused/Died!")
+                 msg = "DOWN" if not use_proxy else "CONN FAIL"
+                 print(f"[{timestamp}] Status: {bcolors.FAIL}{msg}{bcolors.RESET}    | Target or Proxy Unreachable")
             except Exception as e:
                 print(f"[{timestamp}] Status: {bcolors.FAIL}ERROR{bcolors.RESET}   | {e}")
             
