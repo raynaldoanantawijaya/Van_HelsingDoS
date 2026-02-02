@@ -154,9 +154,6 @@ def run_intel():
     common_subs = ["origin", "direct", "cpanel", "mail", "dev", "test", "api", "ftp", "beta", "admin", "secure", "www1", "web"]
 
     print("-" * 40)
-    common_subs = ["origin", "direct", "cpanel", "mail", "dev", "test", "api", "ftp", "beta", "admin", "secure", "www1", "web"]
-
-    print("-" * 40)
     
     # [PHASE 21] Stealth Mode (Proxy Support)
     use_proxy = False
