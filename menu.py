@@ -296,6 +296,46 @@ def run_intel():
         except Exception as e:
              print(f"[*] SSL Inspector: {e} (Skipping)")
 
+        # [PHASE 24] CRT.SH Deep Subdomain Recon
+        print(f"\n{bcolors.OKCYAN}Phase 4.5: CRT.SH Certificate Search...{bcolors.RESET}")
+        try:
+             # Use current session kwargs (supports stealth proxy if enabled)
+             kwargs = get_req_kwargs() 
+             # CRT.SH often times out with proxies, so we try with text/html or json
+             crt_url = f"https://crt.sh/?q=%.{target_domain}&output=json"
+             r_crt = requests.get(crt_url, **kwargs)
+             
+             if r_crt.status_code == 200:
+                 try:
+                     crt_data = r_crt.json()
+                     crt_subs = set()
+                     for entry in crt_data:
+                         name = entry.get('name_value', '')
+                         if "\n" in name:
+                             parts = name.split("\n")
+                             for p in parts:
+                                 if target_domain in p and "*" not in p:
+                                     crt_subs.add(p)
+                         elif target_domain in name and "*" not in name:
+                             crt_subs.add(name)
+                     
+                     if crt_subs:
+                         print(f"[*] CRT.SH Found  : {bcolors.OKGREEN}{len(crt_subs)} subdomains{bcolors.RESET}")
+                         # Add to scanning list (clean duplicates later)
+                         for sub in crt_subs:
+                             # Extract subdomain part
+                             clean = sub.replace(f".{target_domain}", "")
+                             common_subs.append(clean)
+                     else:
+                         print("[*] CRT.SH        : No new subdomains found.")
+                 except:
+                     print("[*] CRT.SH        : Invalid JSON (Rate Limit?)")
+             else:
+                 print(f"[*] CRT.SH        : Failed ({r_crt.status_code})")
+                 
+        except Exception as e:
+             print(f"[*] CRT.SH Error  : {e}")
+
 
         # [PHASE 19 + 20] Zone Hunter + Content Matcher
         print(f"\n{bcolors.OKCYAN}Phase 5: Zone Hunter & Content Verification...{bcolors.RESET}")
