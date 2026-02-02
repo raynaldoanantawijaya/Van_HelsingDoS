@@ -231,6 +231,8 @@ def run_intel():
             for i in range(retries):
                 try:
                     kwargs = get_req_kwargs()
+                    if i > 0:
+                        print(f"[-] Proxy Retry {i}/{retries}...    ", end="\r")
                     return requests.get(url, **kwargs)
                 except Exception:
                     if not use_proxy: raise 
@@ -242,6 +244,8 @@ def run_intel():
              for i in range(retries):
                 try:
                     kwargs = get_req_kwargs()
+                    if i > 0:
+                        print(f"[-] Proxy Retry {i}/{retries}...    ", end="\r")
                     return requests.head(url, **kwargs)
                 except Exception:
                     if not use_proxy: raise
