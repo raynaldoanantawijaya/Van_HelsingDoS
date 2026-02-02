@@ -277,7 +277,8 @@ def run_intel():
                 try:
                     kwargs = get_req_kwargs()
                     if i > 0:
-                        print(f"{bcolors.WARNING}[-] Connection Failed. Rotating Proxy & Retrying ({i+1}/{retries})...{bcolors.RESET}", end="\r")
+                        # Padded with spaces to overwrite previous line completely
+                        print(f"{bcolors.WARNING}[-] Connection Failed. Rotating Proxy & Retrying ({i+1}/{retries})...{bcolors.RESET}{' '*20}", end="\r")
                     return requests.get(url, **kwargs)
                 except Exception:
                     if not use_proxy: raise 
@@ -290,7 +291,7 @@ def run_intel():
                 try:
                     kwargs = get_req_kwargs()
                     if i > 0:
-                        print(f"{bcolors.WARNING}[-] Connection Failed. Rotating Proxy & Retrying ({i+1}/{retries})...{bcolors.RESET}", end="\r")
+                        print(f"{bcolors.WARNING}[-] Connection Failed. Rotating Proxy & Retrying ({i+1}/{retries})...{bcolors.RESET}{' '*20}", end="\r")
                     return requests.head(url, **kwargs)
                 except Exception:
                     if not use_proxy: raise
