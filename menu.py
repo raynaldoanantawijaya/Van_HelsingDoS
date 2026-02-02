@@ -219,6 +219,30 @@ def run_intel():
                      p = f"http://{p}"
                 kwargs['proxies'] = {'http': p, 'https': p}
             return kwargs
+            
+        def get_robust_response(url, retries=3):
+            # Tries to fetch URL, rotating proxies on failure
+            for i in range(retries):
+                try:
+                    kwargs = get_req_kwargs()
+                    return requests.get(url, **kwargs)
+                except Exception:
+                    # If direct mode validation fails, break immediately
+                    if not use_proxy:
+                        raise 
+                    # If proxy mode, try next proxy
+                    continue
+            raise Exception("Max retries exceeded with proxies")
+            
+        def head_robust_response(url, retries=3):
+             for i in range(retries):
+                try:
+                    kwargs = get_req_kwargs()
+                    return requests.head(url, **kwargs)
+                except Exception:
+                    if not use_proxy: raise
+                    continue
+             raise Exception("Max retries exceeded")
 
         # 1. Base Check
         kwargs = get_req_kwargs()
