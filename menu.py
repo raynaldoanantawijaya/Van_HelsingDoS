@@ -375,6 +375,37 @@ def run_intel():
                  print(f"[*] XML-RPC      : Safe/Not Found           ")
         except:
              print(f"[*] XML-RPC      : Error Checking           ")
+        
+        # [PHASE 29] Technology Detective 🕵️‍♂️
+        try:
+            cookies = str(r.cookies.get_dict()).lower()
+            if "phpsessid" in cookies:
+                print(f"[*] Technology   : {bcolors.WARNING}PHP Detected (Cookie){bcolors.RESET}")
+                if "Apache" in server_header: vuln_vector = "SLOW_POST" # PHP+Apache weak to Slow POST
+            elif "asp.net" in cookies or "asp.net" in powered_by.lower():
+                print(f"[*] Technology   : {bcolors.WARNING}ASP.NET (Microsoft){bcolors.RESET}")
+            elif "csrftoken" in cookies and "sessionid" in cookies:
+                print(f"[*] Technology   : {bcolors.WARNING}Python/Django{bcolors.RESET}")
+            elif "jsession" in cookies:
+                print(f"[*] Technology   : {bcolors.WARNING}Java/JSP{bcolors.RESET}")
+        except: pass
+
+        # [PHASE 29] WAF Stress Probe 🛡️
+        if cdn_guess != "Unknown":
+            print("[*] Probing WAF Sensitivity...", end="\r")
+            try:
+                # Send benign SQLi payload
+                payload_url = f"{target_url}?search=' OR 1=1"
+                r_waf = get_robust_response(payload_url, retries=2)
+                
+                if r_waf.status_code in [403, 406, 501]:
+                    print(f"[*] WAF Status   : {bcolors.OKGREEN}ACTIVE & SENSITIVE (Blocking SQLi){bcolors.RESET}   ")
+                elif r_waf.status_code == 200:
+                    print(f"[*] WAF Status   : {bcolors.FAIL}PASSIVE/BYPASSED (Payload Accepted){bcolors.RESET}   ")
+                else: 
+                     print(f"[*] WAF Status   : Unknown ({r_waf.status_code})           ")
+            except:
+                print(f"[*] WAF Status   : Blocking Connection (Highly Sensitive)   ")
              
     except Exception as e:
         print(f"{bcolors.FAIL}[!] Phase 3 Error: {e} (Connection failed or Max Retries){bcolors.RESET}")
