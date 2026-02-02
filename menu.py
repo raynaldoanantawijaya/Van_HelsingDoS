@@ -161,6 +161,46 @@ def run_intel():
     print(f"{bcolors.WARNING}[?] Enable Stealth Mode (Use Proxies for Scan)? (y/n): {bcolors.RESET}", end="")
     if input().lower().startswith("y"):
         use_proxy = True
+        
+        # [NEW] Auto-Refresh Logic (Copied from Sentinel)
+        need_download = False
+        if not os.path.exists("proxy.txt"):
+             print(f"{bcolors.FAIL}[!] proxy.txt not found!{bcolors.RESET}")
+             need_download = True
+        else:
+             print(f"{bcolors.OKCYAN}[?] proxy.txt found. Refresh/Replace it with FRESH proxies? (y/n): {bcolors.RESET}", end="")
+             if input().lower().startswith("y"):
+                  need_download = True
+        
+        if need_download:
+             print(f"{bcolors.OKCYAN}[?] Select Proxy Source:{bcolors.RESET}")
+             print(f"[{bcolors.OKCYAN}1{bcolors.RESET}] Public Mix (High Quantity, Low Quality)")
+             print(f"[{bcolors.OKCYAN}2{bcolors.RESET}] Indonesian Only (Best for .go.id targets)")
+             print(f"[{bcolors.OKCYAN}3{bcolors.RESET}] MIXED MODE (Max Ammo: Public + Indo)")
+
+             rec = "2" if ".id" in target else "1"
+             p_opt = input(f"{bcolors.BOLD}Select (1/2/3, Rec: {rec}): {bcolors.RESET}").strip()
+             
+             if p_opt == "1":
+                 os.system("curl -s https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt > proxy.txt")
+             elif p_opt == "2":
+                 print(f"{bcolors.WARNING}[*] Fetching Fresh Indo Proxies from API...{bcolors.RESET}")
+                 os.system("curl -s \"https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=ID&ssl=all&anonymity=all\" > proxy.txt")
+             elif p_opt == "3":
+                 print(f"{bcolors.WARNING}[*] Fetching Mixed Proxies (Public + Indo API)...{bcolors.RESET}")
+                 os.system("curl -s https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt > public.txt")
+                 os.system("curl -s \"https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=ID&ssl=all&anonymity=all\" > indo.txt")
+                 try:
+                     with open("public.txt", "r", encoding="utf-8", errors="ignore") as f1, \
+                          open("indo.txt", "r", encoding="utf-8", errors="ignore") as f2, \
+                          open("proxy.txt", "w", encoding="utf-8") as out:
+                         c1 = f1.read()
+                         c2 = f2.read()
+                         out.write(c1 + "\n" + c2)
+                 except: pass
+                 if os.path.exists("public.txt"): os.remove("public.txt")
+                 if os.path.exists("indo.txt"): os.remove("indo.txt")
+
         print(f"{bcolors.OKCYAN}[*] Loading proxies from proxy.txt...{bcolors.RESET}")
         try:
             with open("proxy.txt", "r") as f:
@@ -168,6 +208,8 @@ def run_intel():
             if not proxy_list:
                 print(f"{bcolors.FAIL}[!] proxy.txt is empty! Falling back to direct connection.{bcolors.RESET}")
                 use_proxy = False
+            else:
+                print(f"{bcolors.OKGREEN}[*] Loaded {len(proxy_list)} proxies.{bcolors.RESET}")
         except FileNotFoundError:
              print(f"{bcolors.FAIL}[!] proxy.txt not found! Falling back to direct connection.{bcolors.RESET}")
              use_proxy = False
@@ -195,6 +237,8 @@ def run_intel():
                 print(f"[*] Port {port:<5} : {bcolors.OKGREEN}OPEN{bcolors.RESET}")
                 open_ports.append(port)
             sock.close()
+        if not open_ports:
+            print(f"[*] Ports      : {bcolors.WARNING}No common opened ports found (FW Blocked?){bcolors.RESET}")
     except:
         pass
 
