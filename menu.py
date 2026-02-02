@@ -150,6 +150,12 @@ def run_intel():
         target_domain = target.split("/")[0]
         target_url = f"https://{target}"
 
+    # Initialize common subdomains for Zone Hunter
+    common_subs = ["origin", "direct", "cpanel", "mail", "dev", "test", "api", "ftp", "beta", "admin", "secure", "www1", "web"]
+
+    print("-" * 40)
+    common_subs = ["origin", "direct", "cpanel", "mail", "dev", "test", "api", "ftp", "beta", "admin", "secure", "www1", "web"]
+
     print("-" * 40)
     
     # [PHASE 21] Stealth Mode (Proxy Support)
