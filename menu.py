@@ -444,16 +444,16 @@ def run_intel():
     except Exception as e:
         print(f"[*] SSL Inspector: {e} (Skipping)")
 
-    # [PHASE 24] CRT.SH Deep Subdomain Recon
-    print(f"\n{bcolors.OKCYAN}Phase 4.5: CRT.SH Certificate Search...{bcolors.RESET}")
-    try:
-        # CRT.SH often times out with proxies, so we try with text/html or json
-        crt_url = f"https://crt.sh/?q=%.{target_domain}&output=json"
-        
-        # Use robust response for CRT.SH too
-        r_crt = get_robust_response(crt_url)
-        
-        if r_crt.status_code == 200:
+        # [PHASE 24] CRT.SH Deep Subdomain Recon
+        print(f"\n{bcolors.OKCYAN}Phase 4.5: CRT.SH Certificate Search...{bcolors.RESET}")
+        try:
+            # CRT.SH often times out with proxies, so we try with text/html or json
+            crt_url = f"https://crt.sh/?q=%.{target_domain}&output=json"
+            
+            # [OPTIMIZATION] reduced retries for CRT.SH to avoid long waits
+            r_crt = get_robust_response(crt_url, retries=3)
+            
+            if r_crt.status_code == 200:
             try:
                 crt_data = r_crt.json()
                 crt_subs = set()
