@@ -412,75 +412,77 @@ def run_intel():
 
     # [PHASE 20] SSL Certificate Inspector (Deep Search)
     print(f"\n{bcolors.OKCYAN}Phase 4: SSL/SNI Inspector (Deep Search)...{bcolors.RESET}")
-        ssl_sans = []
-        try:
-             import ssl
-             ctx = ssl.create_default_context()
-             ctx.check_hostname = False
-             ctx.verify_mode = ssl.CERT_NONE
-             with socket.create_connection((target_domain, 443), timeout=5) as sock:
-                 with ctx.wrap_socket(sock, server_hostname=target_domain) as ssock:
-                     cert = ssock.getpeercert()
-                     # In some python versions/platforms getpeercert() return empty if verify_mode=CERT_NONE
-                     # We might need to fetch it differently or enable verify temporarily if possible, 
-                     # but standard lib often requires a CA bundle.
-                     # Let's try to parse commonName or subjectAltName if available.
-                     # If CERT_NONE returns nothing, we skip.
-                     pass 
-             
-             # Re-try with active verification for SANs (usually safe)
-             ctx = ssl.create_default_context()
-             with socket.create_connection((target_domain, 443), timeout=5) as sock:
-                 with ctx.wrap_socket(sock, server_hostname=target_domain) as ssock:
-                     cert = ssock.getpeercert()
-                     for field in cert.get('subjectAltName', []):
-                         if field[0] == 'DNS':
-                             ssl_sans.append(field[1])
-             
-             if ssl_sans:
-                 print(f"[*] SSL SANs Found: {bcolors.OKGREEN}{len(ssl_sans)} domains{bcolors.RESET}")
-                 # Add SANs to common_subs for Zone Hunter
-                 common_subs.extend([san.split('.')[0] for san in ssl_sans if target_domain in san])
-        except Exception as e:
-             print(f"[*] SSL Inspector: {e} (Skipping)")
+    ssl_sans = []
+    try:
+        import ssl
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        with socket.create_connection((target_domain, 443), timeout=5) as sock:
+            with ctx.wrap_socket(sock, server_hostname=target_domain) as ssock:
+                cert = ssock.getpeercert()
+                # In some python versions/platforms getpeercert() return empty if verify_mode=CERT_NONE
+                # We might need to fetch it differently or enable verify temporarily if possible, 
+                # but standard lib often requires a CA bundle.
+                # Let's try to parse commonName or subjectAltName if available.
+                # If CERT_NONE returns nothing, we skip.
+                pass 
+        
+        # Re-try with active verification for SANs (usually safe)
+        ctx = ssl.create_default_context()
+        with socket.create_connection((target_domain, 443), timeout=5) as sock:
+            with ctx.wrap_socket(sock, server_hostname=target_domain) as ssock:
+                cert = ssock.getpeercert()
+                for field in cert.get('subjectAltName', []):
+                    if field[0] == 'DNS':
+                        ssl_sans.append(field[1])
+        
+        if ssl_sans:
+            print(f"[*] SSL SANs Found: {bcolors.OKGREEN}{len(ssl_sans)} domains{bcolors.RESET}")
+            # Add SANs to common_subs for Zone Hunter
+            common_subs.extend([san.split('.')[0] for san in ssl_sans if target_domain in san])
+    except Exception as e:
+        print(f"[*] SSL Inspector: {e} (Skipping)")
 
-        # [PHASE 24] CRT.SH Deep Subdomain Recon
-        print(f"\n{bcolors.OKCYAN}Phase 4.5: CRT.SH Certificate Search...{bcolors.RESET}")
-        try:
-             # CRT.SH often times out with proxies, so we try with text/html or json
-             crt_url = f"https://crt.sh/?q=%.{target_domain}&output=json"
-             r_crt = get_robust_response(crt_url)
-             
-             if r_crt.status_code == 200:
-                 try:
-                     crt_data = r_crt.json()
-                     crt_subs = set()
-                     for entry in crt_data:
-                         name = entry.get('name_value', '')
-                         if "\n" in name:
-                             parts = name.split("\n")
-                             for p in parts:
-                                 if target_domain in p and "*" not in p:
-                                     crt_subs.add(p)
-                         elif target_domain in name and "*" not in name:
-                             crt_subs.add(name)
-                     
-                     if crt_subs:
-                         print(f"[*] CRT.SH Found  : {bcolors.OKGREEN}{len(crt_subs)} subdomains{bcolors.RESET}")
-                         # Add to scanning list (clean duplicates later)
-                         for sub in crt_subs:
-                             # Extract subdomain part
-                             clean = sub.replace(f".{target_domain}", "")
-                             common_subs.append(clean)
-                     else:
-                         print("[*] CRT.SH        : No new subdomains found.")
-                 except:
-                     print("[*] CRT.SH        : Invalid JSON (Rate Limit?)")
-             else:
-                 print(f"[*] CRT.SH        : Failed ({r_crt.status_code})")
-                 
-        except Exception as e:
-             print(f"[*] CRT.SH Error  : {e}")
+    # [PHASE 24] CRT.SH Deep Subdomain Recon
+    print(f"\n{bcolors.OKCYAN}Phase 4.5: CRT.SH Certificate Search...{bcolors.RESET}")
+    try:
+        # CRT.SH often times out with proxies, so we try with text/html or json
+        crt_url = f"https://crt.sh/?q=%.{target_domain}&output=json"
+        
+        # Use robust response for CRT.SH too
+        r_crt = get_robust_response(crt_url)
+        
+        if r_crt.status_code == 200:
+            try:
+                crt_data = r_crt.json()
+                crt_subs = set()
+                for entry in crt_data:
+                    name = entry.get('name_value', '')
+                    if "\n" in name:
+                        parts = name.split("\n")
+                        for p in parts:
+                            if target_domain in p and "*" not in p:
+                                crt_subs.add(p)
+                    elif target_domain in name and "*" not in name:
+                        crt_subs.add(name)
+                
+                if crt_subs:
+                    print(f"[*] CRT.SH Found  : {bcolors.OKGREEN}{len(crt_subs)} subdomains{bcolors.RESET}")
+                    # Add to scanning list (clean duplicates later)
+                    for sub in crt_subs:
+                        # Extract subdomain part
+                        clean = sub.replace(f".{target_domain}", "")
+                        common_subs.append(clean)
+                else:
+                    print("[*] CRT.SH        : No new subdomains found.")
+            except:
+                print("[*] CRT.SH        : Invalid JSON (Rate Limit?)")
+        else:
+            print(f"[*] CRT.SH        : Failed ({r_crt.status_code})")
+            
+    except Exception as e:
+        print(f"[*] CRT.SH Error  : {e}")
 
 
         # [PHASE 19 + 20] Zone Hunter + Content Matcher
