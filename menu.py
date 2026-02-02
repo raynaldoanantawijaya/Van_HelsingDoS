@@ -227,25 +227,26 @@ def run_intel():
             return kwargs
         get_req_kwargs = _get_req_kwargs
 
-        def _get_robust_response(url, retries=3):
+        def _get_robust_response(url, retries=50):
+            # Persistent Retry Mode: Tries up to 50 times (User requested "until success")
             for i in range(retries):
                 try:
                     kwargs = get_req_kwargs()
                     if i > 0:
-                        print(f"[-] Proxy Retry {i}/{retries}...    ", end="\r")
+                        print(f"{bcolors.WARNING}[-] Connection Failed. Rotating Proxy & Retrying ({i+1}/{retries})...{bcolors.RESET}", end="\r")
                     return requests.get(url, **kwargs)
                 except Exception:
                     if not use_proxy: raise 
                     continue
-            raise Exception("Max retries exceeded with proxies")
+            raise Exception("Max retries exceeded (Pro Tip: Check your connection or Proxy List!)")
         get_robust_response = _get_robust_response
             
-        def _head_robust_response(url, retries=3):
+        def _head_robust_response(url, retries=50):
              for i in range(retries):
                 try:
                     kwargs = get_req_kwargs()
                     if i > 0:
-                        print(f"[-] Proxy Retry {i}/{retries}...    ", end="\r")
+                        print(f"{bcolors.WARNING}[-] Connection Failed. Rotating Proxy & Retrying ({i+1}/{retries})...{bcolors.RESET}", end="\r")
                     return requests.head(url, **kwargs)
                 except Exception:
                     if not use_proxy: raise
