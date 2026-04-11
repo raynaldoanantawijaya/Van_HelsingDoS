@@ -2,11 +2,13 @@ PyRoxy
 httpx[http2]
 socksio
 cloudscraper
-impacket
 psutil
 requests
 yarl
 certifi
 dnspython
 icmplib
-yarl
+tls-client
+aiohttp
+playwright
+uvloop; sys_platform == "linux"

