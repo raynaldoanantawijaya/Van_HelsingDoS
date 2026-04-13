@@ -114,8 +114,7 @@ def check_playwright_browsers():
         cmd = [sys.executable, "-m", "playwright", "install", "chromium", "--with-deps"]
         # Skip checking deep binary paths, just trigger update nicely if needed
         # Since this is an installer, we can just run it quickly and let it skip if exists
-        report_status("Headless Browser Binaries", False, "Checking/Installing...")
-        print(f"{INFO_MARK} Ensuring Chromium Headless is installed for Cloudflare Bypass...")
+        print(f" {INFO_MARK} Headless Browser Binaries                     - Checking/Installing...")
         subprocess.check_call(cmd)
         report_status("Headless Browser Binaries", True, "Ready")
         return True
