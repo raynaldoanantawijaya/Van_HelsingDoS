@@ -55,7 +55,10 @@ def install_requirements():
             pass # Non-fatal, just try to continue
             
     try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "-r", "requirements.txt"])
+        cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "-r", "requirements.txt"]
+        if sys.platform == 'linux' or sys.platform == 'linux2':
+            cmd.append("--break-system-packages")
+        subprocess.check_call(cmd)
         return True
     except Exception as e:
         print(f"\n{Colors.FAIL}Failed to install requirements: {e}{Colors.RESET}")
