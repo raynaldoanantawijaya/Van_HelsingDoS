@@ -1238,45 +1238,6 @@ class AsyncHttpFlood(Thread):
                 return f"http://{p_str}"
         return None
     
-    def _chaos_gti_sync(self):
-        """Global Threat Intelligence (GTI) synchronization.
-        Cross-pollinates battle experience across different targets by hashing 
-        infrastructure architectures and persisting successful tactics to disk."""
-        intel = self._chaos_intel
-        if intel.get("gti_loaded"):
-            # Already loaded for this session, periodically save
-            if intel["total_executions"] % 100 == 0:
-                try:
-                    import json, os
-                    if not os.path.exists('GTI'): os.makedirs('GTI')
-                    
-                    # Create signature for this target type (Not IP, but the tech stack)
-                    sig = f"{intel.get('waf_type')}_{intel.get('server_type')}_{intel.get('cms_type')}"
-                    
-                    # Only save if we found a winning strategy for this sig
-                    if intel["best_method"]:
-                        db_path = f"GTI/{sig}_tactics.json"
-                        data = {"best": intel["best_method"], "q_table": intel.get("q_table", {})}
-                        with open(db_path, "w") as x: json.dump(data, x)
-                except: pass
-            return
-            
-        intel["gti_loaded"] = True
-        # Try loading past experiences on boot
-        try:
-            import json, os
-            sig = f"{intel.get('waf_type')}_{intel.get('server_type')}_{intel.get('cms_type')}"
-            db_path = f"GTI/{sig}_tactics.json"
-            if os.path.exists(db_path):
-                with open(db_path, "r") as x:
-                    data = json.load(x)
-                    intel["best_method"] = data.get("best")
-                    # Merge past Q-learning brain
-                    if "q_table" in data:
-                        intel["q_table"] = data["q_table"]
-                        intel["gti_match_score"] = 99
-                    if int(REQUESTS_SENT) < 200:
-                        print(f"{bcolors.OKGREEN}[GTI SYNC] Loaded Cyber-Experience for architecture [{sig}]. Adapting immediately.{bcolors.RESET}")
         except: pass
 
     def _chaos_siege_doctrine(self):
@@ -6837,7 +6798,8 @@ class HttpFlood(Thread):
             self._chaos_generate_fingerprints()
             
         # Phase 1.11.1.5: GTI Cross-Target Memory Sync
-        self._chaos_gti_sync()
+        if hasattr(self, '_chaos_gti_sync'):
+            self._chaos_gti_sync()
         # Phase 1.10.5: SIEGE COMMANDER DOCTRINE
         self._chaos_siege_doctrine()
         self._chaos_circadian_rhythm()
