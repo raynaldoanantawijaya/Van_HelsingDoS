@@ -1,0 +1,54 @@
+========================================================================
+ VAN_HELSING DOS (CHAOS V36 COMMANDER) — PANDUAN PENGOPERASIAN LENGKAP
+========================================================================
+Van_Helsing Dos (Phase 3 "Field Marshal" Edition) adalah mesin pemosisi L7 (Layer 7) asinkron mutakhir yang dibuat untuk penetrasi stress testing, WAF Bypassing, perlindungan Sentinel Otomatis, dan IP Doxing. 
+
+------------------------------------------------------------------------
+BAGAIMANA CARA MENGINSTAL?
+------------------------------------------------------------------------
+Semua fungsi teknis ribet telah diotomatisasi melalui "install.py". 
+
+Langkah Pertama:
+1. Buka Terminal/Command Prompt di folder repositori ini.
+2. Ketikkan: `python install.py` (Pastikan Python versi 3.8 ke atas).
+3. Installer akan secara otomatis; 
+   - Memindai OS Anda.
+   - Mengunduh library Python terbaru khusus proxy asinkron dan HTTP/3.
+   - Mengunduh browser Headless di belakang layar agar Cloudflare bisa di-*bypass*.
+   - Mengalihkan Anda langsung ke medan tempur (menu).
+
+------------------------------------------------------------------------
+CARA PENGGUNAAN (DI MEDAN TEMPUR)
+------------------------------------------------------------------------
+Saat berada di dalam `menu.py`, Anda akan disajikan Menu Interaktif Commander:
+
+>> PILIHAN [1]: CHAOS / FULL AUTO (SANGAT DIREKOMENDASIKAN)
+Ini adalah otak dari sistem V36. Anda hanya perlu menyalin dan menempelkan target URL (contoh: https://target.com). Semuanya otomatis!
+
+  [Apa yang dilakukan Mesin CHAOS saat opsi ini diplih?]
+  1. PRE-FLIGHT DOXING: Mencari jejak "Origin IP" dari sub-domain rahasia, MX DNS Record agar serangan bisa menembus di belakang pantat Cloudflare/WAF.
+  2. TARGET PROFILING: Mesin akan membedah Firewall mereka (Mengenali ciri Cloudflare, Akamai, Azure, Laravel, WordPress, IIS, Litespeed) dan mendeteksi port alternatif yang terbuka.
+  3. PROXY HARVESTER: Mengunduh hingga ratusan ribu SOCKS4/SOCKS5 IPs anonim dari list terbaru di web, kemudian secara adil didistribusikan secara eksklusif kepada 'Terminals'.
+  4. TERMINAL LEGION: Tergantung pada seberapa keras targetnya (misal WAF+H3), sistem akan spawn 2 hingga 5 program botnet bersamaan.
+  5. TURNSTILE DAEMON: Jika mendeteksi Firewall level dewa atau Cloudflare Turnstile, program pendukung rahasia khusus akan berjalan otomatis di background untuk secara abadi me-refresh lisensi valid / clearance cookies.
+  6. THE SENTINEL: Sistem Penjaga ini tak akan tidur layaknya komandan. Jika Sentinel mengecek bahwa target pulih dari efek DDoS (kembali menyala 200 OK), Sentinel akan dengan sadis membunuh program serangan lama dan bermutasi (Rotation Vector / payload H3_QUIC, POS_DYN, dll) untuk membunuh target yang mulai pulih lagi, tanpa butuh klik dari Anda!
+
+>> PILIHAN [2] sampai [7]: MANUAL OVERRIDE (Serangan Tradisional)
+Gunakan ini untuk tes diagnostik manual.
+- [2] SLOW      : Metode Slowloris V2 — mengikat soket secara menggantung untuk merusak RAM peladen (Berbahaya untuk Apache Murni).
+- [3] DYN       : Payload dinamis untuk mengakali Cache dan membuat database CPU bergetar keras (Berbahaya untuk Nginx).
+- [4] STRESS    : Aliran volume gigabit brutal mentah (Jika website sedang tak menggunakan pelindung apapun).
+- [5] XMLRPC    : Kalau targetnya memakai WordPress. Menemukan satu kelemahan plugin maka 1 tembakan akan di Amplifikasi sebesar 50.000 kali.
+- [6] POST_DYN  : Pengirim data berat secara konstan dengan method POST. Ini mengabaikan Varnish atau Fastly Cache.
+- [7] H2_FLOOD  : Menyalahgunakan fitur Multiplex *HTTP2* agar satu aliran koneksi TCP saja bisa menembakan ratusan Stream brutal.
+
+------------------------------------------------------------------------
+TIPS TARGET KHUSUS
+------------------------------------------------------------------------
+1. Jika target .GO.ID (Indonesia), biasanya mereka kebal bot luar negeri karena IPS Kominfo. Mesin CHAOS (opsi 1) telah dioptimasi akan otomatis mengunduh ribuan proxy khusus regional Asia jika deteksi ".id" menyala.
+2. Target Cloudflare Tingkat Lanjut: Mesin akan menerapkan H3_QUIC. Yaitu manipulasi UDP *Multiplexing* dan manipulasi UA *Chromium Fingerprint* secara konstan di *headers*.
+3. Terminal Berulang: Anda bisa menghentikan semua serangan CHAOS hanya dengan menekan (Ctrl + C) pada terminal utama.
+
+========================================================================
+V36 Battle-Ready. By Raynaldo.
+========================================================================
