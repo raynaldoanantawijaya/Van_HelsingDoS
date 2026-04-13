@@ -8,10 +8,18 @@ BAGAIMANA CARA MENGINSTAL?
 ------------------------------------------------------------------------
 Semua fungsi teknis ribet telah diotomatisasi melalui "install.py". 
 
-Langkah Pertama:
-1. Buka Terminal/Command Prompt di folder repositori ini.
-2. Ketikkan: `python install.py` (Pastikan Python versi 3.8 ke atas).
-3. Installer akan secara otomatis; 
+Langkah Pertama (Mengunduh & Menyiapkan):
+1. Pastikan Anda sudah menginstal Git dan Python (versi 3.8 ke atas).
+2. Buka Terminal (Linux/Mac) atau PowerShell/Command Prompt (Windows).
+3. Clone repository ini dari GitHub:
+   `git clone https://github.com/raynaldoanantawijaya/Van_HelsingDoS.git`
+4. Masuk ke direktori yang baru saja diunduh:
+   `cd Van_HelsingDoS`
+
+Langkah Kedua (Otomatisasi Instalasi):
+1. Ketikkan perintah berikut untuk memulai proses setup:
+   `python install.py`
+2. Installer akan secara otomatis; 
    - Memindai OS Anda.
    - Mengunduh library Python terbaru khusus proxy asinkron dan HTTP/3.
    - Mengunduh browser Headless di belakang layar agar Cloudflare bisa di-*bypass*.
