@@ -67,7 +67,11 @@ def check_requirements():
              report_status("Core Dependencies (PIP)", True, "Skipped (requirements.txt missing)")
              return True
              
-        import pkg_resources
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=DeprecationWarning)
+            warnings.simplefilter("ignore", category=UserWarning)
+            import pkg_resources
         
         with open('requirements.txt', 'r', encoding='utf-8') as f:
             lines = f.readlines()
@@ -166,7 +170,7 @@ def main():
         print(f"{CHECK_MARK} {Colors.BOLD}ALL SYSTEMS GO! Starting Van_HelsingDoS...{Colors.RESET}\n")
         time.sleep(1)
         # Execute the menu logic directly or run it as subprocess
-        os.system(f"{sys.executable} menu.py")
+        os.system(f'"{sys.executable}" menu.py')
     else:
         print(f"{CROSS_MARK} {Colors.WARNING}Some components failed to install. Please check errors above.{Colors.RESET}\n")
         sys.exit(1)

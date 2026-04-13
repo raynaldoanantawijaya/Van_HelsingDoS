@@ -12,3 +12,4 @@ tls-client
 aiohttp
 playwright
 uvloop; sys_platform == "linux"
+aioquic

