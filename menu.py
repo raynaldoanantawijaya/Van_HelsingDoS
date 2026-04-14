@@ -356,15 +356,24 @@ class ProxyManager:
                 # Write alive (verified) first, then unchecked
                 alive_list = sorted(alive) if 'alive' in dir() else []
                 unchecked_list = sorted(unchecked) if 'unchecked' in dir() else sorted(proxies)
-                for p in alive_list:
-                    f.write(p + "\n")
-                for p in unchecked_list:
-                    if p not in alive:
+                
+                # [FIX] If we found enough verified alive proxies, DO NOT dilute with unchecked ones!
+                if len(alive_list) > 500:
+                    for p in alive_list:
                         f.write(p + "\n")
+                else:
+                    for p in alive_list:
+                        f.write(p + "\n")
+                    for p in unchecked_list:
+                        if p not in alive:
+                            f.write(p + "\n")
             
             total = len(proxies)
             alive_n = len(alive) if 'alive' in dir() else 0
-            print(f"{bcolors.OKGREEN}[+] ⚡ TOTAL: {total:,} proxies | {alive_n:,} VERIFIED ALIVE (written first) ⚡{bcolors.RESET}")
+            if alive_n > 500:
+                print(f"{bcolors.OKGREEN}[+] ⚡ EXCLUSIVE POOL: {alive_n:,} VERIFIED ALIVE proxies loaded (Discarded ~{total - alive_n:,} unchecked for max speed) ⚡{bcolors.RESET}")
+            else:
+                print(f"{bcolors.OKGREEN}[+] ⚡ TOTAL: {total:,} proxies | {alive_n:,} VERIFIED ALIVE (written first) ⚡{bcolors.RESET}")
         except Exception as e:
             print(f"{bcolors.FAIL}[!] Critical error during proxy fetch: {e}{bcolors.RESET}")
 
