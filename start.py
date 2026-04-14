@@ -7076,7 +7076,7 @@ class HttpFlood(Thread):
             "GET": self.GET, "POST": self.POST, "STRESS": self.STRESS,
             "PPS": self.PPS, "DYN": self.DYN, "POST_DYN": self.POST_DYN,
             "SLOW_V2": self.SLOW_V2, "XMLRPC_AMP": self.XMLRPC_AMP,
-            "WP_SEARCH": self.WP_SEARCH, "BOT": self.BOT, "COOKIE": self.COOKIE,
+            "WP_SEARCH": self.WP_SEARCH, "BOT": self.BOT, "COOKIE": self.COOKIES,
         }
         if HAS_TLS_CLIENT:
             method_map["STEALTH_JA3"] = self.STEALTH_JA3
