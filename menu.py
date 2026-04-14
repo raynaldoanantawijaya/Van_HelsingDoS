@@ -200,6 +200,15 @@ class ProxyManager:
                     "https://raw.githubusercontent.com/proxygenerator1/ProxyGenerator/main/MostStable/socks5.txt",
                     "https://spys.me/proxy.txt",
                     "https://spys.me/socks.txt",
+                    # --- TIER 3.5: PREMIUM REPOS ---
+                    "https://raw.githubusercontent.com/MuRongPIG/Proxy-Master/main/http.txt",
+                    "https://raw.githubusercontent.com/MuRongPIG/Proxy-Master/main/socks4.txt",
+                    "https://raw.githubusercontent.com/MuRongPIG/Proxy-Master/main/socks5.txt",
+                    "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/http/http.txt",
+                    "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/socks4/socks4.txt",
+                    "https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/socks5/socks5.txt",
+                    "https://raw.githubusercontent.com/ErcinDedeoglu/proxies/main/proxies/http.txt",
+                    "https://raw.githubusercontent.com/ErcinDedeoglu/proxies/main/proxies/socks4.txt",
                     # --- TIER 4: API PLAINTEXT ---
                     "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all",
                     "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks4&timeout=10000&country=all&ssl=all&anonymity=all",
@@ -310,13 +319,13 @@ class ProxyManager:
                 
                 proxy_list.sort(key=_port_weight) # Stable sort keeps shuffle within groups
                 
-                check_batch_size = min(50000, len(proxy_list))
+                check_batch_size = min(100000, len(proxy_list))  # [UPGRADED] Test up to 100K proxies
                 check_batch = proxy_list[:check_batch_size]
                 unchecked = set(proxy_list[check_batch_size:])
                 
-                print(f"{bcolors.OKCYAN}  [Phase 3/3] TCP Liveness Check on {check_batch_size:,} proxies (priority ports first)...{bcolors.RESET}")
+                print(f"{bcolors.OKCYAN}  [Phase 3/3] TCP Liveness Check on {check_batch_size:,} proxies (expanding pool)...{bcolors.RESET}")
                 alive = set()
-                with concurrent.futures.ThreadPoolExecutor(max_workers=800) as pool:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1200) as pool:
                     futures = {pool.submit(_tcp_check, p, 3): p for p in check_batch}
                     done = 0
                     for future in concurrent.futures.as_completed(futures):
