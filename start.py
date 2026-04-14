@@ -2877,7 +2877,7 @@ class HttpFlood(Thread):
         """Poll the local headless browser engine (Turnstile Dispenser) for fresh clearance cookies.
         This allows the Python fast-execution engine to use real browser tokens just solved by Playwright."""
         intel = self._chaos_intel
-        if not HAS_PLAYWRIGHT or not intel.get("playwright_active"):
+        if not intel.get("playwright_active"):
             return None
             
         try:
@@ -5580,7 +5580,7 @@ class HttpFlood(Thread):
             # WAF Anomaly & Browser Engine interaction
             if "js_challenge" in rules:
                 intel["anomaly_score"] = min(intel.get("anomaly_score", 0) + 10, 100)
-                if HAS_PLAYWRIGHT and not intel.get("playwright_active"):
+                if not intel.get("playwright_active"):
                     intel["playwright_active"] = True
                     if int(REQUESTS_SENT) > 0 and int(REQUESTS_SENT) < 2000:
                         print(f"{bcolors.WARNING}[CHAOS WAF] JS Challenge detected! Activating Headless Browser Engine to bypass...{bcolors.RESET}")
