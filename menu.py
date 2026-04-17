@@ -46,21 +46,19 @@ class ProxyManager:
     def prompt_and_download(target, use_proxy_input=True):
         if not use_proxy_input: return False, []
         
-        need_download = True
-        if os.path.exists("proxy.txt"):
-            print(f"{bcolors.OKCYAN}[?] proxy.txt found. Refresh/Replace it with FRESH proxies? (y/n): {bcolors.RESET}", end="")
-            if not input().lower().startswith("y"):
-                need_download = False
-                
-        if need_download:
-            print(f"{bcolors.OKCYAN}[?] Select Proxy Source:{bcolors.RESET}")
-            print(f"[{bcolors.OKCYAN}1{bcolors.RESET}] Public Mix (High Quantity, Low Quality)")
-            print(f"[{bcolors.OKCYAN}2{bcolors.RESET}] Indonesian Only (Best for .go.id targets)")
-            print(f"[{bcolors.OKCYAN}3{bcolors.RESET}] MIXED MODE (Max Ammo: Public + Indo)")
+        print(f"{bcolors.OKGREEN}[+] Auto-refreshing proxy pool to guarantee maximum freshness!{bcolors.RESET}")
+        
+        print(f"{bcolors.OKCYAN}[?] Select Proxy Source:{bcolors.RESET}")
+        print(f"[{bcolors.OKCYAN}1{bcolors.RESET}] Public Mix (High Quantity, Low Quality)")
+        print(f"[{bcolors.OKCYAN}2{bcolors.RESET}] Indonesian Only (Best for .go.id targets)")
+        print(f"[{bcolors.OKCYAN}3{bcolors.RESET}] MIXED MODE (Max Ammo: Public + Indo) - RECOMMENDED")
 
-            rec = "2" if ".id" in target else "1"
-            p_opt = input(f"{bcolors.BOLD}Select (1/2/3, Rec: {rec}): {bcolors.RESET}").strip()
-            ProxyManager.download_proxies(p_opt)
+        rec = "3"
+        p_opt = input(f"{bcolors.BOLD}Select (1/2/3) [Default: 3]: {bcolors.RESET}").strip()
+        if not p_opt:
+            p_opt = "3"
+            
+        ProxyManager.download_proxies(p_opt)
             
         return ProxyManager.load_proxies()
 
