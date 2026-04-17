@@ -7873,15 +7873,23 @@ def handleProxyList(con, proxy_li, proxy_ty, url=None):
             lines = [line.strip() for line in f.read().splitlines() if line.strip()]
             import random
             
-            # Map proxy_ty to correct enum if possible
-            ptype_mapping = {1: 1, 4: 4, 5: 5} 
+            # Map user input proxy_ty to actual PyRoxy enums
+            # Note: PyRoxy ProxyType enums: HTTP=1, HTTPS=2, SOCKS4=3, SOCKS5=4
+            ptype_mapping = {
+                1: ProxyType.HTTP,  
+                4: ProxyType.SOCKS4, 
+                5: ProxyType.SOCKS5,
+                7: None # MIXED
+            } 
             default_ptype = ptype_mapping.get(proxy_ty, None)
+            
+            valid_enums = [ProxyType.HTTP, ProxyType.SOCKS4, ProxyType.SOCKS5]
             
             for line in lines:
                 try:
-                    # Dynamically assign proxy type if proxy_ty=7 (Mixed Pool) or randomly 
+                    # Dynamically assign proxy type enum if proxy_ty=7 (Mixed Pool) or randomly 
                     # This solves the 0 PPS bug where HTTP proxies drop SOCKS5 handshakes
-                    current_ptype = default_ptype if default_ptype else random.choice([1, 4, 5])
+                    current_ptype = default_ptype if default_ptype else random.choice(valid_enums)
                     
                     # Format: user:pass@host:port
                     if "@" in line:
