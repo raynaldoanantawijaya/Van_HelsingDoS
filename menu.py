@@ -70,20 +70,34 @@ class ProxyManager:
         ip_port_re = re.compile(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{1,5})')
         
         def _fetch_url(url):
-            """Fetch a single URL and return set of ip:port strings."""
+            """Fetch a single URL and return set of protocol://ip:port strings.
+            Auto-detects proxy type from source URL name."""
             found = set()
+            # Auto-detect protocol from source URL
+            url_lower = url.lower()
+            if 'socks5' in url_lower:
+                prefix = 'socks5://'
+            elif 'socks4' in url_lower:
+                prefix = 'socks4://'
+            else:
+                prefix = 'http://'
             try:
                 r = requests.get(url, timeout=12, headers={"User-Agent": "Mozilla/5.0"})
                 if r.status_code == 200:
                     for m in ip_port_re.findall(r.text):
-                        found.add(m)
+                        found.add(prefix + m)
             except: pass
             return found
         
         def _tcp_check(proxy_str, timeout=3):
-            """Test TCP connectivity to a proxy. Returns proxy_str if alive."""
+            """Test TCP connectivity to a proxy. Returns proxy_str if alive.
+            Handles protocol://ip:port format."""
             try:
-                ip, port = proxy_str.split(":")
+                # Strip protocol prefix for TCP check, but preserve for return
+                raw = proxy_str
+                if '://' in raw:
+                    raw = raw.split('://', 1)[1]
+                ip, port = raw.split(":")
                 port = int(port)
                 if port < 1 or port > 65535: return None
                 # Quick IP validation
@@ -96,7 +110,7 @@ class ProxyManager:
                 s.settimeout(timeout)
                 s.connect((ip, port))
                 s.close()
-                return proxy_str
+                return proxy_str  # Return with protocol prefix preserved
             except:
                 return None
         
@@ -309,7 +323,9 @@ class ProxyManager:
                 common_ports = {80, 443, 8080, 8443, 3128, 1080, 8888, 9050, 4145, 9999}
                 def _port_weight(p_str):
                     try:
-                        port = int(p_str.split(":")[-1])
+                        # Handle protocol://ip:port format
+                        raw = p_str.split('://', 1)[-1] if '://' in p_str else p_str
+                        port = int(raw.split(":")[-1])
                         if port in common_ports: return 0
                         if port < 10000: return 1
                         return 2
@@ -343,19 +359,21 @@ class ProxyManager:
             if mode in ["2", "3"]:
                 print(f"{bcolors.WARNING}[*] Fetching Fresh Indo Proxies from APIs...{bcolors.RESET}")
                 indo_apis = [
-                    "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=ID&ssl=all&anonymity=all",
-                    "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks4&timeout=10000&country=ID&ssl=all&anonymity=all",
+                    ("https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=ID&ssl=all&anonymity=all", "http://"),
+                    ("https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks4&timeout=10000&country=ID&ssl=all&anonymity=all", "socks4://"),
                 ]
-                for u in indo_apis:
+                for u, pfx in indo_apis:
                     try:
                         r = requests.get(u, timeout=10)
                         for line in r.text.splitlines():
-                            if ":" in line: proxies.add(line.strip())
+                            if ":" in line: proxies.add(pfx + line.strip())
                     except: pass
                 try:
                     r = requests.get("https://proxylist.geonode.com/api/proxy-list?country=ID&limit=500&page=1&sort_by=lastChecked&sort_type=desc", timeout=8)
                     for p in r.json().get("data", []):
-                        proxies.add(f"{p['ip']}:{p['port']}")
+                        proto = p.get('protocols', ['http'])
+                        pfx = 'socks5://' if 'socks5' in proto else 'socks4://' if 'socks4' in proto else 'http://'
+                        proxies.add(f"{pfx}{p['ip']}:{p['port']}")
                 except: pass
 
             # Write proxy.txt — alive proxies FIRST for priority loading
