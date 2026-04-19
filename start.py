@@ -1847,9 +1847,11 @@ class HttpFlood(Thread):
             import urllib.request
             start = time()
             target_url = f"{self._target.scheme}://{self._target.authority}/"
+            domain = self._target.authority.split(':')[0]
             api_url = f"https://api.hackertarget.com/httpheaders/?q={target_url}"
             req = urllib.request.Request(api_url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            
+            with urllib.request.urlopen(req, timeout=12) as resp:
                 data = resp.read().decode('utf-8', errors='ignore')
             elapsed_ms = int((time() - start) * 1000)
             
@@ -1880,7 +1882,24 @@ class HttpFlood(Thread):
                 # API rate limit hit — don't update status, just skip
                 intel["ext_health_status"] = intel.get("ext_health_status", "SKIP")
             else:
-                # hackertarget couldn't reach target = likely truly down
+                # hackertarget couldn't reach target. 
+                # [V49 2-Step Verification] Fallback to ViewDNS to confirm it's actually DOWN
+                try:
+                    vd_url = f"https://viewdns.info/httpheaders/?domain={domain}"
+                    vd_req = urllib.request.Request(vd_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/135.0'})
+                    with urllib.request.urlopen(vd_req, timeout=10) as vd_resp:
+                        vd_data = vd_resp.read().decode('utf-8', errors='ignore')
+                        if 'HTTP/' in vd_data and 'Moved Permanently' not in vd_data:
+                            # Target is actually UP, Hackertarget just glitched
+                            intel["ext_health_status"] = "HTTP OK"
+                            intel["target_is_down"] = False
+                            intel["target_getting_weaker"] = False
+                            intel["health_history"].append(500)
+                            return
+                except:
+                    pass
+                
+                # Both external checkers failed = definitively DOWN
                 intel["target_is_down"] = True
                 intel["target_getting_weaker"] = True
                 intel["ext_health_status"] = "DOWN"
