@@ -120,6 +120,17 @@ class ProxyManager:
                 # PHASE 1: PARALLEL STATIC RAW LIST DOWNLOAD (91 verified sources)
                 # ================================================================
                 urls = [
+                    # --- TIER 0: ELITE (User Recommended) ---
+                    "https://raw.githubusercontent.com/SevenworksDev/proxy-list/main/proxies/http.txt",
+                    "https://raw.githubusercontent.com/SevenworksDev/proxy-list/main/proxies/https.txt",
+                    "https://raw.githubusercontent.com/SevenworksDev/proxy-list/main/proxies/socks4.txt",
+                    "https://raw.githubusercontent.com/SevenworksDev/proxy-list/main/proxies/socks5.txt",
+                    "https://raw.githubusercontent.com/dpangestuw/Free-Proxy/master/http.txt",
+                    "https://raw.githubusercontent.com/dpangestuw/Free-Proxy/master/socks4.txt",
+                    "https://raw.githubusercontent.com/dpangestuw/Free-Proxy/master/socks5.txt",
+                    "https://raw.githubusercontent.com/ALIILAPRO/Proxy/main/http.txt",
+                    "https://raw.githubusercontent.com/ALIILAPRO/Proxy/main/socks4.txt",
+                    "https://raw.githubusercontent.com/ALIILAPRO/Proxy/main/socks5.txt",
                     # --- TIER 1: MEGA (10K+ each) ---
                     "https://raw.githubusercontent.com/mishakorzik/Free-Proxy/main/proxy.txt",
                     "https://raw.githubusercontent.com/MuRongPIG/Proxy-Master/main/http.txt",
