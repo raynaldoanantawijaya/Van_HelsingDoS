@@ -1866,7 +1866,8 @@ class HttpFlood(Thread):
         Checks target health from EXTERNAL servers every 5 minutes.
         Completely bypasses local IP bans. 1 check/5min = ~12/hr = stays within API limits."""
         intel = self._chaos_intel
-        if intel["total_executions"] % 25 != 0:
+        # [V51.3] Run the health probe early (at execution 2) to get initial status, then every 600s
+        if intel["total_executions"] < 2:
             return
         
         # Check every 10 minutes (600s) to guarantee no rate limits and reduce overhead
