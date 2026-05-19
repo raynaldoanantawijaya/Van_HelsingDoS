@@ -1,0 +1,16 @@
+=== CHAOS BATTLE REPORT ===
+Target: www.konisolo.com
+Target Status: Assumed Offline/Stressed
+Duration: 60 seconds
+Total Sent: 160 requests
+Data Egress: 168.945312KB
+===========================
+
+=== CHAOS BATTLE REPORT ===
+Target: www.konisolo.com
+Target Status: Assumed Offline/Stressed
+Duration: 60 seconds
+Total Sent: 40 requests
+Data Egress: 36.132812KB
+===========================
+
