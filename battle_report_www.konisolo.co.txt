@@ -14,3 +14,11 @@ Total Sent: 40 requests
 Data Egress: 36.132812KB
 ===========================
 
+=== CHAOS BATTLE REPORT ===
+Target: www.konisolo.com
+Target Status: Assumed Offline/Stressed
+Duration: 120 seconds
+Total Sent: 0 requests
+Data Egress: 0B
+===========================
+

